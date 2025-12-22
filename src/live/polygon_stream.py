@@ -2,13 +2,14 @@
 """
 Polygon.io WebSocket Client for Live Price Ingestion.
 
-Supports multiple stream modes:
+Supports connecting to ALL stream types simultaneously:
 - quotes: Real-time forex quotes (C.XAU/USD)
 - aggs_minute: Minute aggregates (CA.XAU/USD)
 - aggs_second: Second aggregates (CAS.XAU/USD)
 
 Uses SymbolResolver for correct symbol formatting.
 Includes automatic reconnection and heartbeat monitoring.
+PERSISTENT connection - never disconnects voluntarily.
 """
 
 import os
@@ -17,7 +18,7 @@ import time
 import logging
 import threading
 from datetime import datetime, timezone
-from typing import Callable, Optional, Dict, Any
+from typing import Callable, Optional, Dict, Any, List
 from dataclasses import dataclass
 from enum import Enum
 
@@ -41,6 +42,7 @@ class WSMode(str, Enum):
     QUOTES = "quotes"
     AGGS_MINUTE = "aggs_minute"
     AGGS_SECOND = "aggs_second"
+    ALL = "all"  # Subscribe to all channels
 
 
 @dataclass
@@ -61,11 +63,13 @@ class StreamEvent:
     low: Optional[float] = None
     close: Optional[float] = None
     volume: Optional[float] = None
+    source: Optional[str] = None  # "quotes", "aggs_minute", "aggs_second"
     
     def to_dict(self) -> Dict[str, Any]:
         d = {
             "type": self.type,
             "timestamp": self.timestamp,
+            "source": self.source,
         }
         if self.type == "quote":
             d.update({
@@ -95,13 +99,13 @@ class PolygonStream:
     """
     Live price streaming from Polygon.io WebSocket.
     
-    Supports multiple stream modes and normalizes all events
-    to a common format.
+    Can connect to ALL channels simultaneously for maximum data.
+    PERSISTENT - automatically reconnects forever.
     
     Args:
         api_key: Polygon.io API key
         resolver: SymbolResolver instance
-        mode: WebSocket mode (quotes, aggs_minute, aggs_second)
+        mode: WebSocket mode (quotes, aggs_minute, aggs_second, or "all")
         on_event: Callback function receiving StreamEvent dict
     """
     
@@ -123,7 +127,7 @@ class PolygonStream:
         self,
         api_key: str,
         resolver: SymbolResolver,
-        mode: WSMode = WSMode.QUOTES,
+        mode: WSMode = WSMode.ALL,
         on_event: Optional[Callable[[Dict], None]] = None,
     ):
         self.api_key = api_key
@@ -139,23 +143,31 @@ class PolygonStream:
         self._last_event_time: Optional[datetime] = None
         self._reconnect_count = 0
         self._events_received = 0
+        self._subscribed_channels: List[str] = []
         
         logger.info(
-            f"PolygonStream initialized: {resolver.display_name()}, mode={mode.value}"
+            f"PolygonStream initialized: {resolver.display_name()}, mode={mode.value if hasattr(mode, 'value') else mode}"
         )
     
     def _default_event_handler(self, event: Dict):
         """Default event handler - just logs."""
         logger.debug(f"Event: {event}")
     
-    def _get_subscription_channel(self) -> str:
-        """Get the WebSocket subscription channel based on mode."""
-        if self.mode == WSMode.QUOTES:
-            return self.resolver.ws_quotes()
+    def _get_subscription_channels(self) -> List[str]:
+        """Get the WebSocket subscription channels based on mode."""
+        if self.mode == WSMode.ALL:
+            # Subscribe to ALL channels
+            return [
+                self.resolver.ws_quotes(),      # C.XAU/USD
+                self.resolver.ws_aggs_minute(), # CA.XAU/USD
+                self.resolver.ws_aggs_second(), # CAS.XAU/USD
+            ]
+        elif self.mode == WSMode.QUOTES:
+            return [self.resolver.ws_quotes()]
         elif self.mode == WSMode.AGGS_MINUTE:
-            return self.resolver.ws_aggs_minute()
+            return [self.resolver.ws_aggs_minute()]
         elif self.mode == WSMode.AGGS_SECOND:
-            return self.resolver.ws_aggs_second()
+            return [self.resolver.ws_aggs_second()]
         else:
             raise ValueError(f"Unknown mode: {self.mode}")
     
@@ -171,8 +183,8 @@ class PolygonStream:
         self._running = True
         self._reconnect_count = 0
         
-        channel = self._get_subscription_channel()
-        logger.info(f"Starting Polygon stream: {channel}")
+        channels = self._get_subscription_channels()
+        logger.info(f"Starting Polygon stream with {len(channels)} channels: {channels}")
         
         self._start_websocket()
         
@@ -256,11 +268,13 @@ class PolygonStream:
             logger.info(f"Status: {status} - {message}")
             
             if status == "auth_success":
-                # Subscribe to the appropriate channel
-                channel = self._get_subscription_channel()
-                sub_msg = {"action": "subscribe", "params": channel}
-                self._ws.send(json.dumps(sub_msg))
-                logger.info(f"Subscribed to: {channel}")
+                # Subscribe to ALL configured channels
+                channels = self._get_subscription_channels()
+                for channel in channels:
+                    sub_msg = {"action": "subscribe", "params": channel}
+                    self._ws.send(json.dumps(sub_msg))
+                    logger.info(f"Subscribing to: {channel}")
+                    self._subscribed_channels.append(channel)
                 
         elif ev == "C":
             # Forex quote
@@ -268,11 +282,11 @@ class PolygonStream:
             
         elif ev == "CA":
             # Minute aggregate
-            self._handle_aggregate(msg)
+            self._handle_aggregate(msg, source="aggs_minute")
             
         elif ev == "CAS":
             # Second aggregate
-            self._handle_aggregate(msg)
+            self._handle_aggregate(msg, source="aggs_second")
     
     def _handle_quote(self, msg: Dict):
         """Handle forex quote message (ev=C)."""
@@ -285,8 +299,7 @@ class PolygonStream:
             ask = msg.get("a") or msg.get("ap")
             
             if bid is None or ask is None:
-                logger.warning(f"Quote missing bid/ask: {msg}")
-                return
+                return  # Skip invalid quotes silently
             
             mid = (bid + ask) / 2
             
@@ -296,6 +309,7 @@ class PolygonStream:
                 bid=bid,
                 ask=ask,
                 mid=mid,
+                source="quotes",
             )
             
             self._last_event_time = datetime.now(timezone.utc)
@@ -305,7 +319,7 @@ class PolygonStream:
         except Exception as e:
             logger.error(f"Error processing quote: {e}")
     
-    def _handle_aggregate(self, msg: Dict):
+    def _handle_aggregate(self, msg: Dict, source: str = "aggs"):
         """Handle aggregate bar message (ev=CA or ev=CAS)."""
         try:
             # Polygon aggregate format
@@ -321,6 +335,7 @@ class PolygonStream:
                 low=msg.get("l"),
                 close=msg.get("c"),
                 volume=msg.get("v"),
+                source=source,
             )
             
             self._last_event_time = datetime.now(timezone.utc)
@@ -340,6 +355,7 @@ class PolygonStream:
         
         if self._running:
             self._reconnect_count += 1
+            self._subscribed_channels = []  # Clear subscriptions
             
             # Exponential backoff: 1, 2, 4, 8, 16, 32, 60, 60, 60...
             delay = min(
@@ -403,6 +419,7 @@ class PolygonStream:
                         bid=bid,
                         ask=ask,
                         mid=(bid + ask) / 2,
+                        source="rest",
                     )
                     
         except Exception as e:
@@ -428,7 +445,8 @@ class PolygonStream:
                 age = (datetime.now(timezone.utc) - self._last_event_time).total_seconds()
                 logger.info(
                     f"♥ Heartbeat: {self._events_received} events, "
-                    f"last {age:.1f}s ago, reconnects={self._reconnect_count}"
+                    f"last {age:.1f}s ago, reconnects={self._reconnect_count}, "
+                    f"channels={len(self._subscribed_channels)}"
                 )
                 
                 # Force reconnect if connection seems stale
@@ -450,6 +468,11 @@ class PolygonStream:
     def events_received(self) -> int:
         """Get total events received."""
         return self._events_received
+    
+    @property
+    def subscribed_channels(self) -> List[str]:
+        """Get list of subscribed channels."""
+        return self._subscribed_channels.copy()
 
 
 # =============================================================================
@@ -470,16 +493,18 @@ if __name__ == "__main__":
     resolver = SymbolResolver("XAU", "USD")
     
     def print_event(event):
-        print(f"[{event['timestamp']}] {event['type'].upper()}: ", end="")
+        src = event.get("source", "?")
+        print(f"[{event['timestamp']}] [{src}] {event['type'].upper()}: ", end="")
         if event["type"] == "quote":
             print(f"bid={event['bid']:.2f}, ask={event['ask']:.2f}, mid={event['mid']:.2f}")
         else:
             print(f"O={event['open']:.2f}, H={event['high']:.2f}, L={event['low']:.2f}, C={event['close']:.2f}")
     
+    # Connect to ALL channels
     stream = PolygonStream(
         api_key=api_key,
         resolver=resolver,
-        mode=WSMode.QUOTES,
+        mode=WSMode.ALL,  # All channels!
         on_event=print_event,
     )
     

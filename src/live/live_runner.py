@@ -171,7 +171,7 @@ def load_config() -> dict:
         "telegram_chat_id": telegram_chat_id,
         "base_symbol": os.environ.get("BASE_SYMBOL", "XAU"),
         "quote_symbol": os.environ.get("QUOTE_SYMBOL", "USD"),
-        "ws_mode": os.environ.get("WS_MODE", "quotes"),
+        "ws_mode": os.environ.get("WS_MODE", "all"),  # Connect to ALL channels by default
         "thresh_extreme": float(os.environ.get("THRESH_EXTREME", "0.75")),
         "thresh_high": float(os.environ.get("THRESH_HIGH", "0.65")),
     }
@@ -223,8 +223,10 @@ class LiveRunner:
             self.ws_mode = WSMode.AGGS_MINUTE
         elif ws_mode_str == "aggs_second":
             self.ws_mode = WSMode.AGGS_SECOND
+        elif ws_mode_str == "all":
+            self.ws_mode = WSMode.ALL
         else:
-            raise ValueError(f"Invalid WS_MODE: {ws_mode_str}")
+            raise ValueError(f"Invalid WS_MODE: {ws_mode_str}. Valid: quotes, aggs_minute, aggs_second, all")
         
         # Initialize components
         logger.info("Initializing LiveRunner components...")
@@ -350,8 +352,10 @@ class LiveRunner:
             self.stop()
     
     def _get_ws_channel(self) -> str:
-        """Get the WebSocket channel being used."""
-        if self.ws_mode == WSMode.QUOTES:
+        """Get the WebSocket channel(s) being used."""
+        if self.ws_mode == WSMode.ALL:
+            return f"{self.resolver.ws_quotes()}, {self.resolver.ws_aggs_minute()}, {self.resolver.ws_aggs_second()}"
+        elif self.ws_mode == WSMode.QUOTES:
             return self.resolver.ws_quotes()
         elif self.ws_mode == WSMode.AGGS_MINUTE:
             return self.resolver.ws_aggs_minute()

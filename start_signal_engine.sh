@@ -29,6 +29,8 @@ start() {
     fi
     
     echo "Starting XAUUSD Signal Engine..."
+    # Set WS_MODE=all to connect to all 3 WebSocket channels
+    export WS_MODE=all
     nohup python -m src.live.live_runner \
         --backfill \
         --threshold_long 0.75 \

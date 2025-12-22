@@ -338,10 +338,11 @@ class LiveRunner:
                 
                 # Periodic status log
                 if self._events_received > 0 and self._events_received % 100 == 0:
+                    price_str = f"{self._current_price:.2f}" if self._current_price else "N/A"
                     logger.info(
                         f"Status: events={self._events_received}, "
                         f"signals={self._signals_generated}, "
-                        f"price={self._current_price:.2f if self._current_price else 'N/A'}"
+                        f"price={price_str}"
                     )
         except KeyboardInterrupt:
             logger.info("Keyboard interrupt received")

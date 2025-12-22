@@ -1,0 +1,491 @@
+#!/usr/bin/env python3
+"""
+Polygon.io WebSocket Client for Live Price Ingestion.
+
+Supports multiple stream modes:
+- quotes: Real-time forex quotes (C.XAU/USD)
+- aggs_minute: Minute aggregates (CA.XAU/USD)
+- aggs_second: Second aggregates (CAS.XAU/USD)
+
+Uses SymbolResolver for correct symbol formatting.
+Includes automatic reconnection and heartbeat monitoring.
+"""
+
+import os
+import json
+import time
+import logging
+import threading
+from datetime import datetime, timezone
+from typing import Callable, Optional, Dict, Any
+from dataclasses import dataclass
+from enum import Enum
+
+import requests
+
+try:
+    import websocket
+    WEBSOCKET_AVAILABLE = True
+except ImportError:
+    WEBSOCKET_AVAILABLE = False
+    logging.warning("websocket-client not installed. Install with: pip install websocket-client")
+
+from .symbol_resolver import SymbolResolver
+
+# Configure logging
+logger = logging.getLogger("PolygonStream")
+
+
+class WSMode(str, Enum):
+    """WebSocket subscription mode."""
+    QUOTES = "quotes"
+    AGGS_MINUTE = "aggs_minute"
+    AGGS_SECOND = "aggs_second"
+
+
+@dataclass
+class StreamEvent:
+    """
+    Normalized stream event.
+    
+    For quotes: type="quote", bid/ask populated
+    For bars: type="bar", OHLCV populated
+    """
+    type: str  # "quote" or "bar"
+    timestamp: datetime
+    bid: Optional[float] = None
+    ask: Optional[float] = None
+    mid: Optional[float] = None
+    open: Optional[float] = None
+    high: Optional[float] = None
+    low: Optional[float] = None
+    close: Optional[float] = None
+    volume: Optional[float] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        d = {
+            "type": self.type,
+            "timestamp": self.timestamp,
+        }
+        if self.type == "quote":
+            d.update({
+                "bid": self.bid,
+                "ask": self.ask,
+                "mid": self.mid,
+            })
+        else:  # bar
+            d.update({
+                "open": self.open,
+                "high": self.high,
+                "low": self.low,
+                "close": self.close,
+                "volume": self.volume,
+            })
+        return d
+    
+    @property
+    def price(self) -> float:
+        """Get the primary price (mid for quotes, close for bars)."""
+        if self.type == "quote":
+            return self.mid or 0.0
+        return self.close or 0.0
+
+
+class PolygonStream:
+    """
+    Live price streaming from Polygon.io WebSocket.
+    
+    Supports multiple stream modes and normalizes all events
+    to a common format.
+    
+    Args:
+        api_key: Polygon.io API key
+        resolver: SymbolResolver instance
+        mode: WebSocket mode (quotes, aggs_minute, aggs_second)
+        on_event: Callback function receiving StreamEvent dict
+    """
+    
+    # Polygon WebSocket endpoint
+    WS_URL = "wss://socket.polygon.io/forex"
+    
+    # REST endpoint for last quote fallback
+    REST_URL = "https://api.polygon.io"
+    
+    # Heartbeat interval (seconds)
+    HEARTBEAT_INTERVAL = 30
+    
+    # Reconnect settings - PERSISTENT connection (unlimited retries)
+    MAX_RECONNECT_ATTEMPTS = 999999  # Effectively unlimited
+    RECONNECT_DELAY_INITIAL = 1  # Start with 1 second
+    RECONNECT_DELAY_MAX = 60  # Max 60 seconds between retries
+    
+    def __init__(
+        self,
+        api_key: str,
+        resolver: SymbolResolver,
+        mode: WSMode = WSMode.QUOTES,
+        on_event: Optional[Callable[[Dict], None]] = None,
+    ):
+        self.api_key = api_key
+        self.resolver = resolver
+        self.mode = WSMode(mode) if isinstance(mode, str) else mode
+        self.on_event = on_event or self._default_event_handler
+        
+        # State
+        self._running = False
+        self._ws: Optional[websocket.WebSocketApp] = None
+        self._ws_thread: Optional[threading.Thread] = None
+        self._heartbeat_thread: Optional[threading.Thread] = None
+        self._last_event_time: Optional[datetime] = None
+        self._reconnect_count = 0
+        self._events_received = 0
+        
+        logger.info(
+            f"PolygonStream initialized: {resolver.display_name()}, mode={mode.value}"
+        )
+    
+    def _default_event_handler(self, event: Dict):
+        """Default event handler - just logs."""
+        logger.debug(f"Event: {event}")
+    
+    def _get_subscription_channel(self) -> str:
+        """Get the WebSocket subscription channel based on mode."""
+        if self.mode == WSMode.QUOTES:
+            return self.resolver.ws_quotes()
+        elif self.mode == WSMode.AGGS_MINUTE:
+            return self.resolver.ws_aggs_minute()
+        elif self.mode == WSMode.AGGS_SECOND:
+            return self.resolver.ws_aggs_second()
+        else:
+            raise ValueError(f"Unknown mode: {self.mode}")
+    
+    def start(self):
+        """Start the WebSocket stream."""
+        if self._running:
+            logger.warning("Stream already running")
+            return
+        
+        if not WEBSOCKET_AVAILABLE:
+            raise ImportError("websocket-client not installed")
+        
+        self._running = True
+        self._reconnect_count = 0
+        
+        channel = self._get_subscription_channel()
+        logger.info(f"Starting Polygon stream: {channel}")
+        
+        self._start_websocket()
+        
+        # Start heartbeat monitor
+        self._heartbeat_thread = threading.Thread(
+            target=self._heartbeat_loop,
+            daemon=True
+        )
+        self._heartbeat_thread.start()
+    
+    def stop(self):
+        """Stop the WebSocket stream."""
+        logger.info("Stopping Polygon stream...")
+        self._running = False
+        
+        if self._ws:
+            try:
+                self._ws.close()
+            except Exception as e:
+                logger.error(f"Error closing WebSocket: {e}")
+        
+        # Wait for threads
+        if self._ws_thread and self._ws_thread.is_alive():
+            self._ws_thread.join(timeout=5)
+        if self._heartbeat_thread and self._heartbeat_thread.is_alive():
+            self._heartbeat_thread.join(timeout=5)
+        
+        logger.info(f"Stream stopped. Events received: {self._events_received}")
+    
+    # =========================================================================
+    # WebSocket Implementation
+    # =========================================================================
+    
+    def _start_websocket(self):
+        """Start WebSocket connection."""
+        self._ws = websocket.WebSocketApp(
+            self.WS_URL,
+            on_open=self._on_ws_open,
+            on_message=self._on_ws_message,
+            on_error=self._on_ws_error,
+            on_close=self._on_ws_close,
+        )
+        
+        self._ws_thread = threading.Thread(
+            target=self._ws.run_forever,
+            kwargs={"ping_interval": 20, "ping_timeout": 10},
+            daemon=True
+        )
+        self._ws_thread.start()
+    
+    def _on_ws_open(self, ws):
+        """Handle WebSocket connection open."""
+        logger.info("WebSocket connected")
+        self._reconnect_count = 0
+        
+        # Authenticate
+        auth_msg = {"action": "auth", "params": self.api_key}
+        ws.send(json.dumps(auth_msg))
+    
+    def _on_ws_message(self, ws, message):
+        """Handle incoming WebSocket message."""
+        try:
+            data = json.loads(message)
+            
+            if isinstance(data, list):
+                for msg in data:
+                    self._process_message(msg)
+            else:
+                self._process_message(data)
+                
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse message: {e}")
+    
+    def _process_message(self, msg: Dict):
+        """Process a single WebSocket message."""
+        ev = msg.get("ev")
+        
+        if ev == "status":
+            status = msg.get("status")
+            message = msg.get("message", "")
+            logger.info(f"Status: {status} - {message}")
+            
+            if status == "auth_success":
+                # Subscribe to the appropriate channel
+                channel = self._get_subscription_channel()
+                sub_msg = {"action": "subscribe", "params": channel}
+                self._ws.send(json.dumps(sub_msg))
+                logger.info(f"Subscribed to: {channel}")
+                
+        elif ev == "C":
+            # Forex quote
+            self._handle_quote(msg)
+            
+        elif ev == "CA":
+            # Minute aggregate
+            self._handle_aggregate(msg)
+            
+        elif ev == "CAS":
+            # Second aggregate
+            self._handle_aggregate(msg)
+    
+    def _handle_quote(self, msg: Dict):
+        """Handle forex quote message (ev=C)."""
+        try:
+            # Polygon forex quote format
+            ts_ms = msg.get("t", 0)
+            timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+            
+            bid = msg.get("b") or msg.get("bp")
+            ask = msg.get("a") or msg.get("ap")
+            
+            if bid is None or ask is None:
+                logger.warning(f"Quote missing bid/ask: {msg}")
+                return
+            
+            mid = (bid + ask) / 2
+            
+            event = StreamEvent(
+                type="quote",
+                timestamp=timestamp,
+                bid=bid,
+                ask=ask,
+                mid=mid,
+            )
+            
+            self._last_event_time = datetime.now(timezone.utc)
+            self._events_received += 1
+            self.on_event(event.to_dict())
+            
+        except Exception as e:
+            logger.error(f"Error processing quote: {e}")
+    
+    def _handle_aggregate(self, msg: Dict):
+        """Handle aggregate bar message (ev=CA or ev=CAS)."""
+        try:
+            # Polygon aggregate format
+            # s = start timestamp, e = end timestamp
+            ts_ms = msg.get("e") or msg.get("s", 0)
+            timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+            
+            event = StreamEvent(
+                type="bar",
+                timestamp=timestamp,
+                open=msg.get("o"),
+                high=msg.get("h"),
+                low=msg.get("l"),
+                close=msg.get("c"),
+                volume=msg.get("v"),
+            )
+            
+            self._last_event_time = datetime.now(timezone.utc)
+            self._events_received += 1
+            self.on_event(event.to_dict())
+            
+        except Exception as e:
+            logger.error(f"Error processing aggregate: {e}")
+    
+    def _on_ws_error(self, ws, error):
+        """Handle WebSocket error."""
+        logger.error(f"WebSocket error: {error}")
+    
+    def _on_ws_close(self, ws, close_status_code, close_msg):
+        """Handle WebSocket close - attempt reconnect with exponential backoff."""
+        logger.warning(f"WebSocket closed: {close_status_code} - {close_msg}")
+        
+        if self._running:
+            self._reconnect_count += 1
+            
+            # Exponential backoff: 1, 2, 4, 8, 16, 32, 60, 60, 60...
+            delay = min(
+                self.RECONNECT_DELAY_INITIAL * (2 ** min(self._reconnect_count - 1, 5)),
+                self.RECONNECT_DELAY_MAX
+            )
+            
+            logger.info(f"Reconnecting in {delay}s (attempt #{self._reconnect_count})...")
+            time.sleep(delay)
+            
+            # Only reconnect if still running
+            if self._running:
+                self._start_websocket()
+    
+    # =========================================================================
+    # REST Fallback (Last Quote Only)
+    # =========================================================================
+    
+    def fetch_last_quote(self) -> Optional[StreamEvent]:
+        """
+        Fetch the last forex quote via REST API.
+        
+        This is ONLY used as a keepalive/health check, not for backfilling.
+        
+        Returns:
+            StreamEvent or None if failed
+        """
+        base, quote = self.resolver.rest_last_quote_args()
+        url = f"{self.REST_URL}/v1/last_quote/currencies/{base}/{quote}"
+        
+        params = {"apiKey": self.api_key}
+        
+        try:
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            
+            if data.get("status") == "success" and data.get("last"):
+                last = data["last"]
+                
+                # Timestamp may be in different formats
+                ts = last.get("timestamp")
+                if ts:
+                    if isinstance(ts, (int, float)):
+                        # Assume milliseconds if large number
+                        if ts > 1e12:
+                            ts = ts / 1000
+                        timestamp = datetime.fromtimestamp(ts, tz=timezone.utc)
+                    else:
+                        timestamp = datetime.now(timezone.utc)
+                else:
+                    timestamp = datetime.now(timezone.utc)
+                
+                bid = last.get("bid")
+                ask = last.get("ask")
+                
+                if bid and ask:
+                    return StreamEvent(
+                        type="quote",
+                        timestamp=timestamp,
+                        bid=bid,
+                        ask=ask,
+                        mid=(bid + ask) / 2,
+                    )
+                    
+        except Exception as e:
+            logger.error(f"REST last quote error: {e}")
+        
+        return None
+    
+    # =========================================================================
+    # Heartbeat Monitor
+    # =========================================================================
+    
+    def _heartbeat_loop(self):
+        """Monitor connection health and force reconnect if stale."""
+        STALE_THRESHOLD = 120  # Force reconnect if no data for 2 minutes
+        
+        while self._running:
+            time.sleep(self.HEARTBEAT_INTERVAL)
+            
+            if not self._running:
+                break
+            
+            if self._last_event_time:
+                age = (datetime.now(timezone.utc) - self._last_event_time).total_seconds()
+                logger.info(
+                    f"♥ Heartbeat: {self._events_received} events, "
+                    f"last {age:.1f}s ago, reconnects={self._reconnect_count}"
+                )
+                
+                # Force reconnect if connection seems stale
+                if age > STALE_THRESHOLD and self._ws:
+                    logger.warning(f"Connection stale ({age:.0f}s), forcing reconnect...")
+                    try:
+                        self._ws.close()
+                    except:
+                        pass
+            else:
+                logger.warning("♥ Heartbeat: no events received yet")
+    
+    @property
+    def is_connected(self) -> bool:
+        """Check if WebSocket is connected."""
+        return self._ws is not None and self._running
+    
+    @property
+    def events_received(self) -> int:
+        """Get total events received."""
+        return self._events_received
+
+
+# =============================================================================
+# Standalone test
+# =============================================================================
+
+if __name__ == "__main__":
+    import os
+    from dotenv import load_dotenv
+    
+    load_dotenv()
+    
+    api_key = os.environ.get("POLYGON_API_KEY")
+    if not api_key:
+        print("Set POLYGON_API_KEY in .env file")
+        exit(1)
+    
+    resolver = SymbolResolver("XAU", "USD")
+    
+    def print_event(event):
+        print(f"[{event['timestamp']}] {event['type'].upper()}: ", end="")
+        if event["type"] == "quote":
+            print(f"bid={event['bid']:.2f}, ask={event['ask']:.2f}, mid={event['mid']:.2f}")
+        else:
+            print(f"O={event['open']:.2f}, H={event['high']:.2f}, L={event['low']:.2f}, C={event['close']:.2f}")
+    
+    stream = PolygonStream(
+        api_key=api_key,
+        resolver=resolver,
+        mode=WSMode.QUOTES,
+        on_event=print_event,
+    )
+    
+    try:
+        stream.start()
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        stream.stop()

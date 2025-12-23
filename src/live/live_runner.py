@@ -423,14 +423,22 @@ class LiveRunner:
     
     def _process_signal(self, feature_row, timestamp):
         """Process features and potentially generate a signal."""
-        # Generate signal
-        result = self.signal_engine.generate_signal(feature_row, timestamp)
+        # Generate signal with current price for TP/SL calculation
+        result = self.signal_engine.generate_signal(
+            feature_row, 
+            timestamp,
+            current_price=self._current_price
+        )
         signal = result["signal"]
         proba_up = result["proba_up"]
+        tp = result.get("tp")
+        sl = result.get("sl")
         
         # Log signal
         price_str = f"{self._current_price:.2f}" if self._current_price else "N/A"
-        logger.info(f"Signal: {signal} | P(up)={proba_up:.4f} | Price={price_str}")
+        tp_str = f"{tp:.2f}" if tp else "N/A"
+        sl_str = f"{sl:.2f}" if sl else "N/A"
+        logger.info(f"Signal: {signal} | P(up)={proba_up:.4f} | Price={price_str} | TP={tp_str} | SL={sl_str}")
         
         # Skip FLAT signals
         if signal == "FLAT":
@@ -452,21 +460,22 @@ class LiveRunner:
             else:
                 confidence = 1 - proba_up
             
-            # Send Telegram notification
+            # Send Telegram notification with TP/SL
             self.telegram_bot.send_signal(
                 signal=signal,
                 proba_up=proba_up,
                 timestamp=timestamp,
                 price=self._current_price,
+                tp=tp,
+                sl=sl,
                 risk_pct=self.risk_pct,
                 extra_info={
-                    "Confidence": f"{confidence:.2f}",
                     "Cooldown": f"{decision.cooldown_s}s",
                     "DD": f"{self.risk_guard.get_status()['drawdown_pct']*100:.2f}%",
                 }
             )
             
-            logger.info(f"🔔 SIGNAL SENT: {signal} @ {self._current_price:.2f}")
+            logger.info(f"🔔 SIGNAL SENT: {signal} @ {self._current_price:.2f} | TP={tp_str} | SL={sl_str}")
         else:
             logger.debug(f"Signal blocked: {decision.reason}")
     

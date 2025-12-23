@@ -55,6 +55,8 @@ class TelegramBot:
         proba_up: float,
         timestamp: Optional[datetime] = None,
         price: Optional[float] = None,
+        tp: Optional[float] = None,
+        sl: Optional[float] = None,
         risk_pct: float = 0.0025,
         model_name: str = "y_tb_60",
         extra_info: Optional[Dict] = None
@@ -67,6 +69,8 @@ class TelegramBot:
             proba_up: Probability of up move
             timestamp: Signal timestamp
             price: Current price
+            tp: Take Profit price
+            sl: Stop Loss price
             risk_pct: Risk per trade
             model_name: Model identifier
             extra_info: Additional info to include
@@ -101,9 +105,27 @@ class TelegramBot:
         ]
         
         if price:
-            lines.append(f"<b>Price:</b> {price:.2f}")
+            lines.append(f"<b>Entry:</b> {price:.2f}")
+        
+        # Add TP and SL with pip distance
+        if tp is not None and sl is not None and price:
+            if signal == "LONG":
+                tp_pips = (tp - price) * 10  # Gold is quoted in dollars, ~10 pips per dollar
+                sl_pips = (price - sl) * 10
+            else:  # SHORT
+                tp_pips = (price - tp) * 10
+                sl_pips = (sl - price) * 10
+            
+            lines.append(f"<b>TP:</b> {tp:.2f} (+{tp_pips:.0f} pips)")
+            lines.append(f"<b>SL:</b> {sl:.2f} (-{sl_pips:.0f} pips)")
+            
+            # Risk:Reward ratio
+            if sl_pips > 0:
+                rr = tp_pips / sl_pips
+                lines.append(f"<b>R:R:</b> 1:{rr:.1f}")
         
         lines.extend([
+            "",
             f"<b>Model:</b> {model_name} (60-bar TB)",
             f"<b>Time:</b> {timestamp.strftime('%H:%M UTC')}",
             f"<b>Risk:</b> {risk_pct*100:.2f}%",

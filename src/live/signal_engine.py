@@ -74,7 +74,8 @@ class SignalEngine:
     def generate_signal(
         self,
         feature_row: pd.DataFrame,
-        timestamp: Optional[datetime] = None
+        timestamp: Optional[datetime] = None,
+        current_price: Optional[float] = None
     ) -> Dict:
         """
         Generate a trading signal from features.
@@ -82,9 +83,10 @@ class SignalEngine:
         Args:
             feature_row: Single-row DataFrame with features
             timestamp: Signal timestamp (default: now)
+            current_price: Current price for TP/SL calculation
             
         Returns:
-            Dict with signal, proba_up, timestamp, etc.
+            Dict with signal, proba_up, timestamp, TP, SL, etc.
         """
         if timestamp is None:
             timestamp = datetime.now(timezone.utc)
@@ -93,7 +95,7 @@ class SignalEngine:
         missing = [f for f in self.features if f not in feature_row.columns]
         if missing:
             logger.error(f"Missing features: {missing}")
-            return self._make_result(Signal.FLAT, 0.5, timestamp, "Missing features")
+            return self._make_result(Signal.FLAT, 0.5, timestamp, None, None, None, "Missing features")
         
         # Extract feature array in correct order
         X = feature_row[self.features].values
@@ -106,7 +108,7 @@ class SignalEngine:
                 if np.isnan(X[0, i])
             ]
             logger.warning(f"NaN in features: {nan_cols[:5]}")
-            return self._make_result(Signal.FLAT, 0.5, timestamp, "NaN features")
+            return self._make_result(Signal.FLAT, 0.5, timestamp, None, None, None, "NaN features")
         
         # Get prediction
         try:
@@ -124,7 +126,7 @@ class SignalEngine:
             
         except Exception as e:
             logger.error(f"Prediction error: {e}")
-            return self._make_result(Signal.FLAT, 0.5, timestamp, str(e))
+            return self._make_result(Signal.FLAT, 0.5, timestamp, None, None, None, str(e))
         
         # Determine signal
         if proba_up >= self.threshold_long:
@@ -134,13 +136,98 @@ class SignalEngine:
         else:
             signal = Signal.FLAT
         
-        return self._make_result(signal, proba_up, timestamp)
+        # Calculate TP/SL if we have price and ATR
+        tp_price, sl_price = None, None
+        if current_price and signal != Signal.FLAT:
+            tp_price, sl_price = self._calculate_tp_sl(
+                signal, current_price, feature_row, proba_up
+            )
+        
+        return self._make_result(signal, proba_up, timestamp, current_price, tp_price, sl_price)
+    
+    def _calculate_tp_sl(
+        self,
+        signal: Signal,
+        price: float,
+        feature_row: pd.DataFrame,
+        proba_up: float
+    ) -> tuple:
+        """
+        Calculate Take Profit and Stop Loss levels.
+        
+        MATCHES TRAINING FORMULA (triple-barrier from features_complete.py):
+            Upper barrier: price * (1 + TP_mult * ATR_14 / price)
+            Lower barrier: price * (1 - SL_mult * ATR_14 / price)
+        
+        Default multipliers: TP_mult = 1.0, SL_mult = 1.0
+        This means: TP = price + ATR, SL = price - ATR (for LONG)
+        
+        Args:
+            signal: LONG or SHORT
+            price: Current price
+            feature_row: Features (must contain ATR_14)
+            proba_up: Model confidence
+            
+        Returns:
+            (tp_price, sl_price)
+        """
+        # =====================================================================
+        # EXACT FORMULA FROM TRAINING (features_complete.py line 453-454):
+        # upper = close[t] * (1 + tp_mult * atr[t] / close[t])
+        # lower = close[t] * (1 - sl_mult * atr[t] / close[t])
+        # =====================================================================
+        
+        # Get ATR_14 from features (REQUIRED - same as training)
+        atr = None
+        if 'ATR_14' in feature_row.columns:
+            atr = float(feature_row['ATR_14'].iloc[0])
+        
+        # Fallback to other ATR columns if ATR_14 not found
+        if atr is None or np.isnan(atr):
+            for col in ['atr_14', 'ATR', 'atr']:
+                if col in feature_row.columns:
+                    atr = float(feature_row[col].iloc[0])
+                    if not np.isnan(atr):
+                        break
+        
+        # Last resort: estimate from vol_60 (rolling 60-bar std of log returns)
+        if atr is None or np.isnan(atr) or atr <= 0:
+            if 'vol_60' in feature_row.columns:
+                vol = float(feature_row['vol_60'].iloc[0])
+                if not np.isnan(vol) and vol > 0:
+                    # ATR ≈ price * vol * sqrt(14) for 14-bar ATR proxy
+                    atr = price * vol * np.sqrt(14)
+        
+        # Final fallback: ~0.3% of price (typical gold ATR)
+        if atr is None or np.isnan(atr) or atr <= 0:
+            atr = price * 0.003
+            logger.warning(f"Using fallback ATR: {atr:.2f}")
+        
+        # Multipliers from training (features_complete.py defaults)
+        # tb_tp_mult: float = 1.0, tb_sl_mult: float = 1.0
+        TP_MULT = 1.0
+        SL_MULT = 1.0
+        
+        # Calculate barriers using EXACT training formula
+        if signal == Signal.LONG:
+            # Long: TP above, SL below
+            tp_price = price * (1 + TP_MULT * atr / price)  # = price + atr
+            sl_price = price * (1 - SL_MULT * atr / price)  # = price - atr
+        else:  # SHORT
+            # Short: TP below, SL above
+            tp_price = price * (1 - TP_MULT * atr / price)  # = price - atr
+            sl_price = price * (1 + SL_MULT * atr / price)  # = price + atr
+        
+        return round(tp_price, 2), round(sl_price, 2)
     
     def _make_result(
         self,
         signal: Signal,
         proba_up: float,
         timestamp: datetime,
+        price: Optional[float] = None,
+        tp_price: Optional[float] = None,
+        sl_price: Optional[float] = None,
         error: Optional[str] = None
     ) -> Dict:
         """Create signal result dict."""
@@ -148,6 +235,9 @@ class SignalEngine:
             "signal": signal.value,
             "proba_up": round(proba_up, 4),
             "timestamp": timestamp,
+            "price": price,
+            "tp": tp_price,
+            "sl": sl_price,
             "threshold_long": self.threshold_long,
             "threshold_short": self.threshold_short,
             "error": error,

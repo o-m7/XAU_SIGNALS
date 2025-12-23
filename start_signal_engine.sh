@@ -33,8 +33,8 @@ start() {
     export WS_MODE=all
     nohup python -m src.live.live_runner \
         --backfill \
-        --threshold_long 0.75 \
-        --threshold_short 0.20 \
+        --threshold_long 0.70 \
+        --threshold_short 0.35 \
         >> "$LOGFILE" 2>&1 &
     
     echo $! > "$PIDFILE"

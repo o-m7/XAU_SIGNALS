@@ -34,7 +34,7 @@ start() {
     nohup python -m src.live.live_runner \
         --backfill \
         --threshold_long 0.70 \
-        --threshold_short 0.35 \
+        --threshold_short 0.25 \
         >> "$LOGFILE" 2>&1 &
     
     echo $! > "$PIDFILE"

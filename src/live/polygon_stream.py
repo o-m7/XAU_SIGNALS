@@ -268,13 +268,19 @@ class PolygonStream:
             logger.info(f"Status: {status} - {message}")
             
             if status == "auth_success":
-                # Subscribe to ALL configured channels
+                # Subscribe to configured channel(s)
                 channels = self._get_subscription_channels()
                 for channel in channels:
                     sub_msg = {"action": "subscribe", "params": channel}
                     self._ws.send(json.dumps(sub_msg))
                     logger.info(f"Subscribing to: {channel}")
                     self._subscribed_channels.append(channel)
+            
+            elif status == "auth_failed":
+                # Stop trying to reconnect on auth failure
+                logger.error(f"AUTH FAILED: {message}")
+                logger.error("Check your Polygon API key and plan. Stopping reconnection attempts.")
+                self._running = False  # Stop the reconnection loop
                 
         elif ev == "C":
             # Forex quote
@@ -357,13 +363,20 @@ class PolygonStream:
             self._reconnect_count += 1
             self._subscribed_channels = []  # Clear subscriptions
             
+            # Limit reconnection attempts to avoid infinite loop
+            if self._reconnect_count > 10:
+                logger.error(f"Too many reconnection attempts ({self._reconnect_count}). Stopping.")
+                logger.error("Check your API key and internet connection.")
+                self._running = False
+                return
+            
             # Exponential backoff: 1, 2, 4, 8, 16, 32, 60, 60, 60...
             delay = min(
                 self.RECONNECT_DELAY_INITIAL * (2 ** min(self._reconnect_count - 1, 5)),
                 self.RECONNECT_DELAY_MAX
             )
             
-            logger.info(f"Reconnecting in {delay}s (attempt #{self._reconnect_count})...")
+            logger.info(f"Reconnecting in {delay}s (attempt #{self._reconnect_count}/10)...")
             time.sleep(delay)
             
             # Only reconnect if still running

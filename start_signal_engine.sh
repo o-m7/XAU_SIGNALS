@@ -38,7 +38,7 @@ start() {
     echo "☕ Caffeinate started (PID: $CAFFEINE_PID) - Mac will stay awake"
     
     # Set WS_MODE=quotes to connect to only 1 WebSocket channel (most stable)
-    export WS_MODE=quotes
+    export WS_MODE=all
     nohup python -m src.live.live_runner \
         --backfill \
         --threshold_long 0.70 \

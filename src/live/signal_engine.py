@@ -172,51 +172,30 @@ class SignalEngine:
             (tp_price, sl_price)
         """
         # =====================================================================
-        # EXACT FORMULA FROM TRAINING (features_complete.py line 453-454):
-        # upper = close[t] * (1 + tp_mult * atr[t] / close[t])
-        # lower = close[t] * (1 - sl_mult * atr[t] / close[t])
+        # FIXED TP/SL WITH 1:1.5 RISK:REWARD RATIO
+        # 
+        # Account: $25,000
+        # Risk: 1% = $250 per trade
+        # Reward: 1.5x = $375 per trade
+        #
+        # For gold (XAUUSD) intraday trading:
+        # SL distance: $15 (reasonable for intraday)
+        # TP distance: $22.50 (1.5x SL for 1:1.5 R:R)
         # =====================================================================
         
-        # Get ATR_14 from features (REQUIRED - same as training)
-        atr = None
-        if 'ATR_14' in feature_row.columns:
-            atr = float(feature_row['ATR_14'].iloc[0])
+        # Fixed distances for XAUUSD (in dollars)
+        SL_DISTANCE = 15.0   # Stop loss: $15 from entry
+        TP_DISTANCE = 22.50  # Take profit: $22.50 from entry (1.5x SL)
         
-        # Fallback to other ATR columns if ATR_14 not found
-        if atr is None or np.isnan(atr):
-            for col in ['atr_14', 'ATR', 'atr']:
-                if col in feature_row.columns:
-                    atr = float(feature_row[col].iloc[0])
-                    if not np.isnan(atr):
-                        break
-        
-        # Last resort: estimate from vol_60 (rolling 60-bar std of log returns)
-        if atr is None or np.isnan(atr) or atr <= 0:
-            if 'vol_60' in feature_row.columns:
-                vol = float(feature_row['vol_60'].iloc[0])
-                if not np.isnan(vol) and vol > 0:
-                    # ATR ≈ price * vol * sqrt(14) for 14-bar ATR proxy
-                    atr = price * vol * np.sqrt(14)
-        
-        # Final fallback: ~0.3% of price (typical gold ATR)
-        if atr is None or np.isnan(atr) or atr <= 0:
-            atr = price * 0.003
-            logger.warning(f"Using fallback ATR: {atr:.2f}")
-        
-        # Multipliers from training (features_complete.py defaults)
-        # tb_tp_mult: float = 1.0, tb_sl_mult: float = 1.0
-        TP_MULT = 1.0
-        SL_MULT = 1.0
-        
-        # Calculate barriers using EXACT training formula
+        # Calculate TP/SL prices
         if signal == Signal.LONG:
             # Long: TP above, SL below
-            tp_price = price * (1 + TP_MULT * atr / price)  # = price + atr
-            sl_price = price * (1 - SL_MULT * atr / price)  # = price - atr
+            tp_price = price + TP_DISTANCE
+            sl_price = price - SL_DISTANCE
         else:  # SHORT
             # Short: TP below, SL above
-            tp_price = price * (1 - TP_MULT * atr / price)  # = price - atr
-            sl_price = price * (1 + SL_MULT * atr / price)  # = price + atr
+            tp_price = price - TP_DISTANCE
+            sl_price = price + SL_DISTANCE
         
         return round(tp_price, 2), round(sl_price, 2)
     

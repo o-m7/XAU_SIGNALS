@@ -194,7 +194,7 @@ class LiveRunner:
         model_path: str = str(DEFAULT_MODEL_PATH),
         threshold_long: float = 0.60,
         threshold_short: float = 0.40,
-        risk_pct: float = 0.0025,
+        risk_pct: float = 0.01,  # 1% risk per trade
         start_balance: float = 25_000.0,
         max_dd_pct: float = 0.06,
         profit_target_pct: float = 0.05,
@@ -528,7 +528,7 @@ def main():
     parser.add_argument(
         "--risk_pct",
         type=float,
-        default=0.0025,
+        default=0.01,  # 1% risk per trade
         help="Risk per trade as fraction of equity"
     )
     

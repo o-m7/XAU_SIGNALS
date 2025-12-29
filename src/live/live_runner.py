@@ -420,6 +420,16 @@ class LiveRunner:
         if self.feature_buffer.is_warming_up():
             return
         
+        # CRITICAL FIX: If feature_row is None (bar not completed yet), 
+        # but buffer is ready, get the latest features anyway
+        # This ensures we always use the most recent features, not stale ones
+        if feature_row is None and self.feature_buffer.is_ready():
+            try:
+                feature_row = self.feature_buffer.get_feature_row()
+                logger.debug("Using latest features (bar not yet completed)")
+            except Exception as e:
+                logger.debug(f"Could not get latest features: {e}")
+        
         # Log price regularly with P(up) (every 10 events to show activity without spam)
         if not hasattr(self, '_price_log_count'):
             self._price_log_count = 0
@@ -427,9 +437,30 @@ class LiveRunner:
         if self._price_log_count % 10 == 0 and self._current_price and feature_row is not None:
             # Generate signal to get P(up) for logging
             try:
+                # Log key features to diagnose stale data
+                if not hasattr(self, '_last_features_logged'):
+                    self._last_features_logged = {}
+                
+                # Check if key features are changing
+                key_features = ['ret_1', 'ret_5', 'ret_10', 'vol_10', 'ATR_14', 'close_mid_diff']
+                feature_changes = {}
+                for feat in key_features:
+                    if feat in feature_row.columns:
+                        current_val = feature_row[feat].iloc[0]
+                        last_val = self._last_features_logged.get(feat)
+                        if last_val is not None:
+                            feature_changes[feat] = current_val - last_val
+                        self._last_features_logged[feat] = current_val
+                
                 result = self.signal_engine.generate_signal(feature_row, self._current_price)
                 proba_up = result.get("proba_up", 0.0)
-                logger.info(f"💰 Price: {self._current_price:.2f} | P(up)={proba_up:.4f} | Source: {event.get('source', 'unknown')}")
+                
+                # Log feature changes if they exist
+                changes_str = ""
+                if feature_changes:
+                    changes_str = " | Changes: " + ", ".join([f"{k}={v:.6f}" for k, v in list(feature_changes.items())[:3]])
+                
+                logger.info(f"💰 Price: {self._current_price:.2f} | P(up)={proba_up:.4f} | Bars={self.feature_buffer.get_bar_count()}{changes_str} | Source: {event.get('source', 'unknown')}")
             except Exception as e:
                 logger.debug(f"Could not compute P(up) for price log: {e}")
                 logger.info(f"💰 Price: {self._current_price:.2f} | Source: {event.get('source', 'unknown')}")

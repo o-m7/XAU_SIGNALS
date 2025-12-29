@@ -109,8 +109,8 @@ class RiskGuard:
         if prob_up >= self.thresh_high or prob_up <= (1 - self.thresh_high):
             return 60
         
-        # Default: low confidence
-        return 300
+        # Default: low confidence (reduced from 300s to 180s for more signals)
+        return 180
     
     def _is_extreme_confidence(self, prob_up: float) -> bool:
         """Check if confidence is in extreme range."""

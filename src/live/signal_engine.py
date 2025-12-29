@@ -273,13 +273,15 @@ class SignalEngine:
             current_bar = feature_row.iloc[0]
             
             # 1. Check ATR (Is there enough juice to cover spread?)
-            min_atr = 0.50  # Minimum 50 cents move expected
+            # Relaxed during volatile periods - allow lower ATR to catch moves
+            min_atr = 0.30  # Minimum 30 cents move expected (was 0.50)
             if current_bar['ATR_14'] < min_atr:
                 logger.debug(f"Volatility filter: ATR too low ({current_bar['ATR_14']:.2f} < {min_atr})")
                 return False  # Market is dead, don't trade
             
             # 2. Check Spread (Is cost too high?)
-            max_spread = 0.20  # Max 20 cents spread
+            # Relaxed during crashes - spreads can widen significantly
+            max_spread = 0.30  # Max 30 cents spread (was 0.20)
             if current_bar['spread'] > max_spread:
                 logger.debug(f"Volatility filter: Spread too high ({current_bar['spread']:.2f} > {max_spread})")
                 return False  # Too expensive

@@ -143,7 +143,8 @@ class PolygonStream:
         self._last_event_time: Optional[datetime] = None
         self._reconnect_count = 0
         self._events_received = 0
-        self._subscribed_channels: List[str] = []
+        self._subscribed_channels: List[str] = []  # Currently active subscriptions
+        self._target_channels: List[str] = []  # Channels we want to subscribe to (persistent)
         
         logger.info(
             f"PolygonStream initialized: {resolver.display_name()}, mode={mode.value if hasattr(mode, 'value') else mode}"

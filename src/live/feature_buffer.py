@@ -156,7 +156,19 @@ class FeatureBuffer:
             "n_ticks": 1,
         }
         
+        bars_before = len(self._bars)
         self._bars.append(bar)
+        bars_after = len(self._bars)
+        
+        # DEBUG: Verify bar was added
+        if bars_after <= bars_before:
+            logger.error(
+                f"⚠️ BAR NOT ADDED! Before={bars_before}, After={bars_after}, "
+                f"deque maxlen={self._bars.maxlen}"
+            )
+        elif bars_after % 50 == 0:  # Log every 50 bars
+            logger.debug(f"FeatureBuffer: {bars_after} bars collected")
+        
         self._log_warmup_progress()
         
         if self.is_ready():

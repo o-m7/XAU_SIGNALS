@@ -305,11 +305,21 @@ class LiveRunner:
             lookback_bars=self.backfill_bars,
         )
         
+        bar_count = self.feature_buffer.get_bar_count()
         if success:
-            logger.info("✓ Backfill successful - feature buffer is ready")
+            logger.info(f"✓ Backfill successful - feature buffer is ready with {bar_count} bars")
             self._warmup_notified = True  # Skip warmup notification
         else:
-            logger.warning("⚠ Backfill failed - falling back to live warmup")
+            logger.warning(
+                f"⚠ Backfill failed - only {bar_count} bars collected "
+                f"(need {self.feature_buffer.min_bars_required}). "
+                f"Falling back to live warmup."
+            )
+            if bar_count < 10:
+                logger.error(
+                    f"❌ CRITICAL: Only {bar_count} bars collected! "
+                    f"Backfill may have failed completely. Check API key and network."
+                )
     
     def start(self):
         """Start the live signal engine."""
@@ -423,10 +433,11 @@ class LiveRunner:
         # CRITICAL FIX: If feature_row is None (bar not completed yet), 
         # but buffer is ready, get the latest features anyway
         # This ensures we always use the most recent features, not stale ones
-        if feature_row is None and self.feature_buffer.is_ready():
+        # BUT: Only do this for quotes (not bars), since bars should always return feature_row
+        if feature_row is None and self.feature_buffer.is_ready() and event["type"] == "quote":
             try:
                 feature_row = self.feature_buffer.get_feature_row()
-                logger.debug("Using latest features (bar not yet completed)")
+                logger.debug(f"Using latest features (quote received, bar not yet completed, buffer has {self.feature_buffer.get_bar_count()} bars)")
             except Exception as e:
                 logger.debug(f"Could not get latest features: {e}")
         

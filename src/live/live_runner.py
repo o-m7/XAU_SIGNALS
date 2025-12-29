@@ -220,16 +220,23 @@ class LiveRunner:
         )
         
         # Parse WS mode
-        ws_mode_str = config["ws_mode"].lower()
+        ws_mode_str = config["ws_mode"].lower().strip()
+        logger.info(f"🔧 WS_MODE from config: '{ws_mode_str}' (raw: '{config['ws_mode']}')")
+        
         if ws_mode_str == "quotes":
             self.ws_mode = WSMode.QUOTES
+            logger.info("📡 Using WS Mode: QUOTES only (1 channel)")
         elif ws_mode_str == "aggs_minute":
             self.ws_mode = WSMode.AGGS_MINUTE
+            logger.info("📡 Using WS Mode: MINUTE AGGREGATES only (1 channel)")
         elif ws_mode_str == "aggs_second":
             self.ws_mode = WSMode.AGGS_SECOND
+            logger.info("📡 Using WS Mode: SECOND AGGREGATES only (1 channel)")
         elif ws_mode_str == "all":
             self.ws_mode = WSMode.ALL
+            logger.info("📡 Using WS Mode: ALL (3 channels: quotes, minute, second)")
         else:
+            logger.error(f"❌ Invalid WS_MODE: '{ws_mode_str}'. Valid: quotes, aggs_minute, aggs_second, all")
             raise ValueError(f"Invalid WS_MODE: {ws_mode_str}. Valid: quotes, aggs_minute, aggs_second, all")
         
         # Initialize components

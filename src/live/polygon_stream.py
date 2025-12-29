@@ -157,18 +157,24 @@ class PolygonStream:
         """Get the WebSocket subscription channels based on mode."""
         if self.mode == WSMode.ALL:
             # Subscribe to ALL channels
-            return [
+            channels = [
                 self.resolver.ws_quotes(),      # C.XAU/USD
                 self.resolver.ws_aggs_minute(), # CA.XAU/USD
                 self.resolver.ws_aggs_second(), # CAS.XAU/USD
             ]
+            logger.info(f"🔌 Mode=ALL: Will subscribe to {len(channels)} channels")
+            return channels
         elif self.mode == WSMode.QUOTES:
+            logger.info(f"🔌 Mode=QUOTES: Will subscribe to 1 channel")
             return [self.resolver.ws_quotes()]
         elif self.mode == WSMode.AGGS_MINUTE:
+            logger.info(f"🔌 Mode=AGGS_MINUTE: Will subscribe to 1 channel")
             return [self.resolver.ws_aggs_minute()]
         elif self.mode == WSMode.AGGS_SECOND:
+            logger.info(f"🔌 Mode=AGGS_SECOND: Will subscribe to 1 channel")
             return [self.resolver.ws_aggs_second()]
         else:
+            logger.error(f"❌ Unknown WS mode: {self.mode}")
             raise ValueError(f"Unknown mode: {self.mode}")
     
     def start(self):

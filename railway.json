@@ -4,7 +4,7 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "python -m src.live.live_runner --backfill --threshold_long 0.70 --threshold_short 0.30",
+    "startCommand": "python -m src.live.live_runner --backfill --threshold_long 0.60 --threshold_short 0.40",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10
   }

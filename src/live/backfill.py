@@ -205,6 +205,7 @@ def backfill_feature_buffer(
     # Feed bars into feature buffer
     logger.info(f"Loading {len(bars_df)} bars into feature buffer...")
     
+    bars_added = 0
     for idx, row in bars_df.iterrows():
         # Create bar event
         event = {
@@ -224,9 +225,31 @@ def backfill_feature_buffer(
             event["bid"] = row["close"] - spread / 2
             event["ask"] = row["close"] + spread / 2
         
+        # Get bar count before adding
+        bars_before = feature_buffer.get_bar_count()
         feature_buffer.update_from_bar(event)
+        bars_after = feature_buffer.get_bar_count()
+        
+        # Verify bar was added
+        if bars_after > bars_before:
+            bars_added += 1
+        else:
+            logger.warning(f"Bar {idx} was NOT added! Before={bars_before}, After={bars_after}")
+        
+        # Log progress every 50 bars
+        if (idx + 1) % 50 == 0:
+            logger.info(f"  Progress: {idx + 1}/{len(bars_df)} bars processed, {bars_added} added, buffer has {bars_after} bars")
     
-    logger.info(f"Feature buffer: {feature_buffer.get_bar_count()} bars, ready={feature_buffer.is_ready()}")
+    final_count = feature_buffer.get_bar_count()
+    logger.info(f"Backfill complete: {bars_added} bars added, buffer has {final_count} bars, ready={feature_buffer.is_ready()}")
+    
+    if final_count < feature_buffer.min_bars_required:
+        logger.error(
+            f"❌ INSUFFICIENT BARS: Only {final_count} bars collected, "
+            f"need {feature_buffer.min_bars_required} bars. Backfill may have failed!"
+        )
+    
+    return feature_buffer.is_ready()
     logger.info("=" * 60)
     
     return feature_buffer.is_ready()

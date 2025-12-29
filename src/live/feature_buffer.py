@@ -156,7 +156,19 @@ class FeatureBuffer:
             "n_ticks": 1,
         }
         
+        bars_before = len(self._bars)
         self._bars.append(bar)
+        bars_after = len(self._bars)
+        
+        # DEBUG: Verify bar was added
+        if bars_after <= bars_before:
+            logger.error(
+                f"⚠️ BAR NOT ADDED! Before={bars_before}, After={bars_after}, "
+                f"deque maxlen={self._bars.maxlen}"
+            )
+        elif bars_after % 50 == 0:  # Log every 50 bars
+            logger.debug(f"FeatureBuffer: {bars_after} bars collected")
+        
         self._log_warmup_progress()
         
         if self.is_ready():
@@ -318,6 +330,15 @@ class FeatureBuffer:
         df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
         df = df.set_index("timestamp").sort_index()
         
+        # DEBUG: Log latest bar info
+        if len(df) > 0:
+            latest_bar = df.iloc[-1]
+            logger.debug(
+                f"FeatureBuffer: Computing features for bar {len(df)} | "
+                f"Close={latest_bar.get('close', 'N/A'):.2f} | "
+                f"Timestamp={latest_bar.name}"
+            )
+        
         # Compute all features
         features = self._compute_features(df)
         
@@ -329,6 +350,12 @@ class FeatureBuffer:
             if feat not in latest.columns:
                 latest[feat] = np.nan
                 logger.warning(f"Missing feature: {feat}")
+        
+        # DEBUG: Log key feature values to detect stale data
+        if len(latest) > 0:
+            key_feats = ['ret_1', 'ret_5', 'close', 'ATR_14']
+            feat_vals = {f: latest[f].iloc[0] for f in key_feats if f in latest.columns}
+            logger.debug(f"FeatureBuffer: Latest features: {feat_vals}")
         
         # Select only required features in correct order
         return latest[FEATURE_NAMES]

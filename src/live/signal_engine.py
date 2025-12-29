@@ -112,6 +112,35 @@ class SignalEngine:
         
         # Get prediction
         try:
+            # DEBUG: Log key feature values to diagnose stale predictions
+            if not hasattr(self, '_last_prediction_features'):
+                self._last_prediction_features = None
+            
+            # Check if key features are changing
+            key_feat_indices = []
+            key_feat_names = ['ret_1', 'ret_5', 'ret_10', 'close', 'ATR_14', 'vol_10']
+            for feat_name in key_feat_names:
+                if feat_name in self.features:
+                    key_feat_indices.append((self.features.index(feat_name), feat_name))
+            
+            if self._last_prediction_features is not None and len(key_feat_indices) > 0:
+                changes = []
+                for idx, name in key_feat_indices[:3]:  # Check first 3
+                    current_val = X[0, idx]
+                    last_val = self._last_prediction_features[idx]
+                    if not np.isnan(current_val) and not np.isnan(last_val):
+                        diff = abs(current_val - last_val)
+                        if diff > 1e-6:  # Significant change
+                            changes.append(f"{name}={current_val:.6f}(Δ{diff:.6f})")
+                
+                if changes:
+                    logger.debug(f"Feature changes detected: {', '.join(changes)}")
+                else:
+                    logger.warning(f"⚠️ NO FEATURE CHANGES detected - features may be stale!")
+            
+            # Store current features for next comparison
+            self._last_prediction_features = X[0].copy()
+            
             proba = self.model.predict_proba(X)[0]
             
             # Probability of +1 (up) class
@@ -123,6 +152,20 @@ class SignalEngine:
                 up_idx = -1  # Last class
             
             proba_up = proba[up_idx]
+            
+            # DEBUG: Log if prediction is stuck
+            if not hasattr(self, '_last_proba_up'):
+                self._last_proba_up = None
+            
+            if self._last_proba_up is not None:
+                proba_diff = abs(proba_up - self._last_proba_up)
+                if proba_diff < 0.01:  # Less than 1% change
+                    logger.warning(
+                        f"⚠️ P(up) STUCK: {proba_up:.4f} (change={proba_diff:.6f}) - "
+                        f"features may not be updating"
+                    )
+            
+            self._last_proba_up = proba_up
             
         except Exception as e:
             logger.error(f"Prediction error: {e}")
@@ -230,13 +273,15 @@ class SignalEngine:
             current_bar = feature_row.iloc[0]
             
             # 1. Check ATR (Is there enough juice to cover spread?)
-            min_atr = 0.50  # Minimum 50 cents move expected
+            # Relaxed during volatile periods - allow lower ATR to catch moves
+            min_atr = 0.30  # Minimum 30 cents move expected (was 0.50)
             if current_bar['ATR_14'] < min_atr:
                 logger.debug(f"Volatility filter: ATR too low ({current_bar['ATR_14']:.2f} < {min_atr})")
                 return False  # Market is dead, don't trade
             
             # 2. Check Spread (Is cost too high?)
-            max_spread = 0.20  # Max 20 cents spread
+            # Relaxed during crashes - spreads can widen significantly
+            max_spread = 0.30  # Max 30 cents spread (was 0.20)
             if current_bar['spread'] > max_spread:
                 logger.debug(f"Volatility filter: Spread too high ({current_bar['spread']:.2f} > {max_spread})")
                 return False  # Too expensive

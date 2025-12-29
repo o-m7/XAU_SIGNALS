@@ -397,13 +397,6 @@ class LiveRunner:
         else:  # bar
             self._current_price = event.get("close")
         
-        # Log price regularly (every 10 events to show activity without spam)
-        if not hasattr(self, '_price_log_count'):
-            self._price_log_count = 0
-        self._price_log_count += 1
-        if self._price_log_count % 10 == 0 and self._current_price:
-            logger.info(f"💰 Price: {self._current_price:.2f} | Source: {event.get('source', 'unknown')}")
-        
         # Update feature buffer based on event type
         if event["type"] == "quote":
             feature_row = self.feature_buffer.update_from_quote(event)
@@ -413,6 +406,20 @@ class LiveRunner:
         # During warmup - no signals, no Telegram
         if self.feature_buffer.is_warming_up():
             return
+        
+        # Log price regularly with P(up) (every 10 events to show activity without spam)
+        if not hasattr(self, '_price_log_count'):
+            self._price_log_count = 0
+        self._price_log_count += 1
+        if self._price_log_count % 10 == 0 and self._current_price and feature_row is not None:
+            # Generate signal to get P(up) for logging
+            try:
+                result = self.signal_engine.generate_signal(feature_row, self._current_price)
+                proba_up = result.get("proba_up", 0.0)
+                logger.info(f"💰 Price: {self._current_price:.2f} | P(up)={proba_up:.4f} | Source: {event.get('source', 'unknown')}")
+            except Exception as e:
+                logger.debug(f"Could not compute P(up) for price log: {e}")
+                logger.info(f"💰 Price: {self._current_price:.2f} | Source: {event.get('source', 'unknown')}")
         
         # Warmup just completed - send notification
         if not self._warmup_notified:

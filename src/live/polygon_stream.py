@@ -270,13 +270,14 @@ class PolygonStream:
             if status == "auth_success":
                 # Subscribe to configured channel(s)
                 channels = self._get_subscription_channels()
-                logger.info(f"Subscribing to {len(channels)} channel(s): {', '.join(channels)}")
+                logger.info(f"🔌 Subscribing to {len(channels)} channel(s): {', '.join(channels)}")
                 for channel in channels:
                     sub_msg = {"action": "subscribe", "params": channel}
                     self._ws.send(json.dumps(sub_msg))
-                    logger.info(f"✓ Subscribed to: {channel}")
+                    logger.info(f"  ✓ Subscribed to: {channel}")
                     self._subscribed_channels.append(channel)
-                logger.info(f"✅ All {len(channels)} channels subscribed successfully")
+                    time.sleep(0.1)  # Small delay between subscriptions
+                logger.info(f"✅ Successfully connected to all {len(channels)} channels: {', '.join(channels)}")
             
             elif status == "auth_failed":
                 # Stop trying to reconnect on auth failure
@@ -538,10 +539,11 @@ class PolygonStream:
             
             if self._last_event_time:
                 age = (datetime.now(timezone.utc) - self._last_event_time).total_seconds()
+                channels_str = ', '.join(self._subscribed_channels) if self._subscribed_channels else "none"
                 logger.info(
                     f"♥ Heartbeat: {self._events_received} events, "
                     f"last {age:.1f}s ago, reconnects={self._reconnect_count}, "
-                    f"channels={len(self._subscribed_channels)}"
+                    f"channels={len(self._subscribed_channels)} ({channels_str})"
                 )
                 
                 # Force reconnect if connection seems stale

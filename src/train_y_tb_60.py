@@ -39,19 +39,22 @@ from sklearn.metrics import (
 PROJECT_ROOT = Path(__file__).parent.parent
 DATA_DIR = PROJECT_ROOT.parent / "Data"
 FEATURES_DIR = PROJECT_ROOT / "data" / "features"
-FEATURES_FILE = FEATURES_DIR / "xauusd_features_2024.parquet"
+FEATURES_FILE = FEATURES_DIR / "xauusd_features_2020_2025.parquet"
 MODELS_DIR = PROJECT_ROOT / "models" / "y_tb_60"
 
 # Random seed for reproducibility
 RANDOM_SEED = 42
 
 # Label columns to exclude from features
-LABEL_COLS = ["y_ret_5", "y_dir_5", "y_ret_15", "y_dir_15", "y_ret_60", "y_dir_60", "y_tb_60"]
+LABEL_COLS = ["y_ret_5", "y_dir_5", "y_ret_15", "y_dir_15", "y_ret_60", "y_dir_60", "y_tb_60", "y_tb_15"]
 
 # Metadata/raw columns to exclude from features
-RAW_COLS = ["open", "high", "low", "close", "volume", "bid_price", "ask_price", "vwap", "trades"]
+# Original Model #1 configuration - only exclude raw OHLCV and metadata
+RAW_COLS = [
+    "open", "high", "low", "close", "volume", "bid_price", "ask_price", "vwap", "trades"
+]
 
-# Target label
+# Target label - Original 60-minute horizon
 TARGET = "y_tb_60"
 
 # Train/Val/Test split ratios (chronological)
@@ -63,27 +66,27 @@ TEST_RATIO = 0.15
 WF_N_FOLDS = 5
 WF_MIN_TRAIN_FRAC = 0.4
 
-# Default model hyperparameters (more regularized baseline)
+# Default model hyperparameters (STRONG regularization to prevent overfitting)
 DEFAULT_MODEL_PARAMS = {
-    "max_depth": 4,
-    "learning_rate": 0.03,
-    "max_iter": 400,
-    "min_samples_leaf": 200,
-    "l2_regularization": 0.1,
+    "max_depth": 2,              # Very shallow trees (reduced from 3 to prevent overfitting)
+    "learning_rate": 0.01,        # Very slow learning (reduced from 0.02)
+    "max_iter": 200,              # Fewer iterations (reduced from 300)
+    "min_samples_leaf": 1000,     # Much higher (increased from 500 - requires more samples per leaf)
+    "l2_regularization": 0.5,     # Stronger L2 (increased from 0.3)
     "max_leaf_nodes": None,
     "early_stopping": True,
-    "validation_fraction": 0.1,
+    "validation_fraction": 0.15,   # More validation data for early stopping
     "random_state": RANDOM_SEED,
     "verbose": 0,
 }
 
-# Hyperparameter search grid
+# Hyperparameter search grid (more conservative to prevent overfitting)
 PARAM_GRID = [
-    {"max_depth": 3, "min_samples_leaf": 200, "learning_rate": 0.03, "l2_regularization": 0.2},
-    {"max_depth": 4, "min_samples_leaf": 200, "learning_rate": 0.03, "l2_regularization": 0.1},
-    {"max_depth": 4, "min_samples_leaf": 400, "learning_rate": 0.03, "l2_regularization": 0.2},
-    {"max_depth": 5, "min_samples_leaf": 400, "learning_rate": 0.02, "l2_regularization": 0.3},
-    {"max_depth": 3, "min_samples_leaf": 600, "learning_rate": 0.02, "l2_regularization": 0.3},
+    {"max_depth": 2, "min_samples_leaf": 1000, "learning_rate": 0.01, "l2_regularization": 0.5},
+    {"max_depth": 2, "min_samples_leaf": 1200, "learning_rate": 0.01, "l2_regularization": 0.6},
+    {"max_depth": 2, "min_samples_leaf": 800, "learning_rate": 0.01, "l2_regularization": 0.5},
+    {"max_depth": 2, "min_samples_leaf": 1000, "learning_rate": 0.015, "l2_regularization": 0.5},
+    {"max_depth": 3, "min_samples_leaf": 1000, "learning_rate": 0.01, "l2_regularization": 0.5},
 ]
 
 
@@ -91,11 +94,35 @@ PARAM_GRID = [
 # MODEL CREATION
 # =============================================================================
 
+def compute_sample_weights(y: np.ndarray) -> np.ndarray:
+    """
+    Compute balanced sample weights to force class balance.
+    
+    This tells the model "1 Short Error = N Long Errors" where N = ratio of class frequencies.
+    Equivalent to class_weight="balanced" for classifiers that support it.
+    
+    Args:
+        y: Binary labels (0 or 1)
+        
+    Returns:
+        Sample weights array
+    """
+    from sklearn.utils.class_weight import compute_sample_weight
+    
+    # Use sklearn's balanced weight computation
+    # This gives more weight to the minority class
+    weights = compute_sample_weight('balanced', y)
+    return weights
+
+
 def make_model(params: Optional[Dict[str, Any]] = None) -> HistGradientBoostingClassifier:
     """
     Create a HistGradientBoostingClassifier with configurable hyperparameters.
     
     Starts from a regularized default config and allows overrides via params dict.
+    
+    Note: HistGradientBoostingClassifier doesn't support class_weight directly,
+    but we'll compute sample weights during training to balance classes.
     
     Args:
         params: Optional dict of hyperparameter overrides
@@ -105,6 +132,11 @@ def make_model(params: Optional[Dict[str, Any]] = None) -> HistGradientBoostingC
     """
     # Start from defaults
     config = DEFAULT_MODEL_PARAMS.copy()
+    
+    # FORCE BALANCE: We'll compute sample weights during training
+    # This tells the model "1 Short Error = N Long Errors" where N = ratio of class frequencies
+    # HistGradientBoostingClassifier doesn't have class_weight parameter,
+    # so we'll handle this via sample_weight in fit()
     
     # Apply overrides
     if params:
@@ -152,25 +184,61 @@ def load_feature_matrix() -> pd.DataFrame:
     
     from features_complete import build_complete_features
     
-    bars_path = DATA_DIR / "ohlcv_minute" / "XAUUSD_minute_2024.parquet"
-    quotes_path = DATA_DIR / "quotes" / "XAUUSD_quotes_2024.parquet"
+    # Load data from 2020-2025 (all available data)
+    print("Loading data from 2020-2025...")
+    import time
+    start_time = time.time()
     
-    if not bars_path.exists():
-        raise FileNotFoundError(f"Bars file not found: {bars_path}")
+    bars_list = []
+    quotes_list = []
     
-    bars = pd.read_parquet(bars_path)
-    if "timestamp" in bars.columns:
-        bars["timestamp"] = pd.to_datetime(bars["timestamp"], utc=True)
-        bars = bars.set_index("timestamp")
+    for year in range(2020, 2026):  # 2020 to 2025
+        bars_path = DATA_DIR / "ohlcv_minute" / f"XAUUSD_minute_{year}.parquet"
+        quotes_path = DATA_DIR / "quotes" / f"XAUUSD_quotes_{year}.parquet"
+        
+        if bars_path.exists():
+            print(f"  Loading {year} bars...", end=" ", flush=True)
+            year_start = time.time()
+            year_bars = pd.read_parquet(bars_path)
+            if "timestamp" in year_bars.columns:
+                year_bars["timestamp"] = pd.to_datetime(year_bars["timestamp"], utc=True)
+                year_bars = year_bars.set_index("timestamp")
+            bars_list.append(year_bars)
+            print(f"✓ ({len(year_bars):,} rows, {time.time()-year_start:.1f}s)")
+        else:
+            print(f"  Warning: {bars_path} not found, skipping {year}")
+        
+        if quotes_path.exists():
+            print(f"  Loading {year} quotes...", end=" ", flush=True)
+            year_start = time.time()
+            year_quotes = pd.read_parquet(quotes_path)
+            if "timestamp" in year_quotes.columns:
+                year_quotes["timestamp"] = pd.to_datetime(year_quotes["timestamp"], utc=True)
+                year_quotes = year_quotes.set_index("timestamp")
+            quotes_list.append(year_quotes)
+            print(f"✓ ({len(year_quotes):,} rows, {time.time()-year_start:.1f}s)")
+    
+    if not bars_list:
+        raise FileNotFoundError("No bar data files found for 2024-2025")
+    
+    # Concatenate all years
+    print(f"\n  Concatenating {len(bars_list)} years of bars...", end=" ", flush=True)
+    concat_start = time.time()
+    bars = pd.concat(bars_list).sort_index()
+    print(f"✓ ({time.time()-concat_start:.1f}s)")
+    print(f"  Total bars: {len(bars):,} rows from {bars.index.min()} to {bars.index.max()}")
     
     quotes = None
-    if quotes_path.exists():
-        quotes = pd.read_parquet(quotes_path)
-        if "timestamp" in quotes.columns:
-            quotes["timestamp"] = pd.to_datetime(quotes["timestamp"], utc=True)
-            quotes = quotes.set_index("timestamp")
+    if quotes_list:
+        print(f"  Concatenating {len(quotes_list)} years of quotes...", end=" ", flush=True)
+        concat_start = time.time()
+        quotes = pd.concat(quotes_list).sort_index()
+        print(f"✓ ({time.time()-concat_start:.1f}s)")
+        print(f"  Total quotes: {len(quotes):,} rows from {quotes.index.min()} to {quotes.index.max()}")
     
-    df = build_complete_features(bars, quotes)
+    print(f"\n  Data loading complete: {time.time()-start_time:.1f}s total")
+    
+    df = build_complete_features(bars, quotes, horizons=[60])  # Only generate y_tb_60 labels
     
     # Save for future use
     FEATURES_DIR.mkdir(parents=True, exist_ok=True)
@@ -184,9 +252,11 @@ def load_feature_matrix() -> pd.DataFrame:
 # FEATURE PREPARATION
 # =============================================================================
 
-def get_feature_columns(df: pd.DataFrame) -> List[str]:
+def get_feature_columns(df: pd.DataFrame, prioritize_effective: bool = True) -> List[str]:
     """
     Get list of numeric feature columns, excluding labels and raw columns.
+    
+    If prioritize_effective=True, will prioritize features that correlate with profitability.
     """
     features = []
     
@@ -198,6 +268,21 @@ def get_feature_columns(df: pd.DataFrame) -> List[str]:
         if not pd.api.types.is_numeric_dtype(df[col]):
             continue
         features.append(col)
+    
+    # Prioritize effective features if available
+    if prioritize_effective:
+        effective_features_file = PROJECT_ROOT / "data" / "effective_features.txt"
+        if effective_features_file.exists():
+            with open(effective_features_file, 'r') as f:
+                effective_features = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+            
+            # Reorder: effective features first
+            effective_set = set(effective_features)
+            effective_in_data = [f for f in effective_features if f in features]
+            other_features = [f for f in features if f not in effective_set]
+            
+            features = effective_in_data + other_features
+            print(f"  Prioritized {len(effective_in_data)} effective features")
     
     return features
 
@@ -359,7 +444,9 @@ def train_and_evaluate(
     Train model and evaluate on a dataset.
     """
     model = make_model(params)
-    model.fit(X_train, y_train)
+    # Use balanced sample weights to force class balance
+    sample_weights = compute_sample_weights(y_train)
+    model.fit(X_train, y_train, sample_weight=sample_weights)
     
     y_pred = model.predict(X_eval)
     y_proba = model.predict_proba(X_eval)[:, 1]
@@ -410,9 +497,10 @@ def hyperparameter_search_walk_forward(
             X_fold_val = X_train[fold_val_idx]
             y_fold_val = y_train[fold_val_idx]
             
-            # Train and evaluate
+            # Train and evaluate with balanced sample weights
             model = make_model(params)
-            model.fit(X_fold_train, y_fold_train)
+            sample_weights = compute_sample_weights(y_fold_train)
+            model.fit(X_fold_train, y_fold_train, sample_weight=sample_weights)
             
             y_proba = model.predict_proba(X_fold_val)[:, 1]
             
@@ -706,7 +794,7 @@ def main():
     df = load_feature_matrix()
     
     # Get feature columns
-    feature_cols = get_feature_columns(df)
+    feature_cols = get_feature_columns(df, prioritize_effective=False)  # Use all features
     print(f"\nUsing {len(feature_cols)} features:")
     for i, col in enumerate(feature_cols):
         print(f"  {i+1:2d}. {col}")
@@ -743,8 +831,14 @@ def main():
     print(f"\n  Using hyperparameters: {best_params}")
     
     final_model = make_model(best_params)
-    final_model.fit(X_train, y_train)
-    print("  ✓ Final model trained on full training set")
+    # Use balanced sample weights to force class balance (fix long bias)
+    print("  Computing balanced sample weights to force class balance...")
+    sample_weights = compute_sample_weights(y_train)
+    class_counts = np.bincount(y_train)
+    print(f"    Class 0 (down): {class_counts[0]:,} samples, weight: {sample_weights[y_train == 0][0]:.4f}")
+    print(f"    Class 1 (up):   {class_counts[1]:,} samples, weight: {sample_weights[y_train == 1][0]:.4f}")
+    final_model.fit(X_train, y_train, sample_weight=sample_weights)
+    print("  ✓ Final model trained on full training set with balanced weights")
     
     # Evaluate on all splits
     y_train_pred = final_model.predict(X_train)

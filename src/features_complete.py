@@ -17,8 +17,17 @@ All computations are vectorized where possible.
 
 import pandas as pd
 import numpy as np
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List
+import sys
+from pathlib import Path
 
+# Add parent directory to path for features_micro
+PROJECT_ROOT = Path(__file__).parent.parent
+PARENT_DIR = PROJECT_ROOT.parent
+if str(PARENT_DIR) not in sys.path:
+    sys.path.insert(0, str(PARENT_DIR))
+
+from features_micro import generate_micro_features
 
 # =============================================================================
 # MERGE QUOTES INTO BARS
@@ -373,6 +382,84 @@ def add_time_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # =============================================================================
+# REGIME DETECTION FEATURES
+# =============================================================================
+
+def add_regime_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add regime detection features to help model detect regime changes.
+    
+    Regime features:
+    - adx: Average Directional Index (trend strength)
+    - adx_slope: Rate of change in ADX (regime transitions)
+    - efficiency_ratio: Kaufman Efficiency Ratio (trend vs noise)
+    - atr_percentile: ATR percentile (volatility regime)
+    - regime_trending: Binary flag for trending regime
+    - regime_ranging: Binary flag for ranging regime
+    - regime_volatile: Binary flag for volatile regime
+    """
+    df = df.copy()
+    
+    # Calculate ADX (Average Directional Index)
+    high = df['high']
+    low = df['low']
+    close = df['close']
+    
+    # True Range
+    tr1 = high - low
+    tr2 = (high - close.shift(1)).abs()
+    tr3 = (low - close.shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    
+    # Directional Movement
+    up_move = high - high.shift(1)
+    down_move = low.shift(1) - low
+    
+    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0)
+    
+    # Smoothed indicators
+    adx_window = 14
+    atr = tr.ewm(span=adx_window, adjust=False).mean()
+    plus_di = 100 * pd.Series(plus_dm).ewm(span=adx_window, adjust=False).mean() / (atr + 1e-8)
+    minus_di = 100 * pd.Series(minus_dm).ewm(span=adx_window, adjust=False).mean() / (atr + 1e-8)
+    
+    # ADX
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di + 1e-8)
+    df['adx'] = dx.ewm(span=adx_window, adjust=False).mean().fillna(0)
+    
+    # ADX Slope (rate of change - detects regime transitions)
+    df['adx_slope'] = df['adx'].diff(5).fillna(0)
+    
+    # Efficiency Ratio (Kaufman)
+    efficiency_window = 20
+    net_change = (close - close.shift(efficiency_window)).abs()
+    sum_changes = close.diff().abs().rolling(efficiency_window).sum()
+    df['efficiency_ratio'] = (net_change / (sum_changes + 1e-8)).fillna(0)
+    
+    # ATR Percentile (volatility regime)
+    if 'ATR_14' in df.columns:
+        atr_lookback = 100
+        df['atr_percentile'] = df['ATR_14'].rolling(atr_lookback, min_periods=10).apply(
+            lambda x: pd.Series(x).rank(pct=True).iloc[-1] if len(x) > 0 else 0.5,
+            raw=False
+        ).fillna(0.5)
+    else:
+        df['atr_percentile'] = 0.5
+    
+    # Regime classification (binary flags)
+    adx_trending_threshold = 25.0
+    adx_strong_threshold = 40.0
+    atr_high_pct = 0.75
+    
+    df['regime_trending'] = ((df['adx'] > adx_trending_threshold) & (df['efficiency_ratio'] > 0.3)).astype(int)
+    df['regime_ranging'] = ((df['adx'] <= adx_trending_threshold) & (df['atr_percentile'] <= atr_high_pct)).astype(int)
+    df['regime_volatile'] = (df['atr_percentile'] > atr_high_pct).astype(int)
+    
+    return df
+
+
+# =============================================================================
 # FIXED-HORIZON DIRECTIONAL LABELS
 # =============================================================================
 
@@ -415,7 +502,8 @@ def add_triple_barrier_labels(
     df: pd.DataFrame,
     h_max: int = 60,
     tp_mult: float = 1.0,
-    sl_mult: float = 1.0
+    sl_mult: float = 1.0,
+    horizons: Optional[List[int]] = None
 ) -> pd.DataFrame:
     """
     Add triple-barrier labels using ATR-scaled barriers.
@@ -424,13 +512,15 @@ def add_triple_barrier_labels(
     - Upper barrier: close_t * (1 + TP_mult * ATR_14_t / close_t)
     - Lower barrier: close_t * (1 - SL_mult * ATR_14_t / close_t)
     - Walk forward until barrier hit or h_max reached
-    - y_tb_60 = +1 (upper hit first), -1 (lower hit first), 0 (neither)
+    - y_tb_{h} = +1 (upper hit first), -1 (lower hit first), 0 (neither)
     
     Args:
         df: DataFrame with close and ATR_14
-        h_max: Maximum horizon
+        h_max: Maximum horizon (for backward compatibility)
         tp_mult: Take-profit multiplier
         sl_mult: Stop-loss multiplier
+        horizons: List of horizons to create labels for (e.g., [15, 60])
+                  If None, only creates y_tb_{h_max}
     """
     df = df.copy()
     
@@ -442,39 +532,45 @@ def add_triple_barrier_labels(
     atr = df["ATR_14"].values
     n = len(df)
     
-    labels = np.zeros(n)
+    # Determine which horizons to create
+    if horizons is None:
+        horizons = [h_max]
     
-    for t in range(n - 1):
-        if np.isnan(close[t]) or np.isnan(atr[t]) or atr[t] <= 0:
-            labels[t] = np.nan
-            continue
+    # Create labels for each horizon
+    for h_max_current in horizons:
+        labels = np.zeros(n)
         
-        # Compute barriers
-        upper = close[t] * (1 + tp_mult * atr[t] / close[t])
-        lower = close[t] * (1 - sl_mult * atr[t] / close[t])
-        
-        # Walk forward
-        label = 0
-        for h in range(1, min(h_max + 1, n - t)):
-            future_close = close[t + h]
-            
-            if np.isnan(future_close):
+        for t in range(n - 1):
+            if np.isnan(close[t]) or np.isnan(atr[t]) or atr[t] <= 0:
+                labels[t] = np.nan
                 continue
             
-            # Check barriers
-            if future_close >= upper:
-                label = 1  # Upper barrier hit first
-                break
-            elif future_close <= lower:
-                label = -1  # Lower barrier hit first
-                break
+            # Compute barriers
+            upper = close[t] * (1 + tp_mult * atr[t] / close[t])
+            lower = close[t] * (1 - sl_mult * atr[t] / close[t])
+            
+            # Walk forward
+            label = 0
+            for h in range(1, min(h_max_current + 1, n - t)):
+                future_close = close[t + h]
+                
+                if np.isnan(future_close):
+                    continue
+                
+                # Check barriers
+                if future_close >= upper:
+                    label = 1  # Upper barrier hit first
+                    break
+                elif future_close <= lower:
+                    label = -1  # Lower barrier hit first
+                    break
+            
+            labels[t] = label
         
-        labels[t] = label
-    
-    # Last h_max bars don't have enough future data
-    labels[n - h_max:] = np.nan
-    
-    df[f"y_tb_{h_max}"] = labels
+        # Last h_max_current bars don't have enough future data
+        labels[n - h_max_current:] = np.nan
+        
+        df[f"y_tb_{h_max_current}"] = labels
     
     return df
 
@@ -483,13 +579,52 @@ def add_triple_barrier_labels(
 # MASTER BUILD FUNCTION
 # =============================================================================
 
+def add_interaction_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Creates interaction features to force the model to view Price Action
+    through the lens of Order Flow and Volatility.
+    
+    These interactions help the model understand:
+    - When large wicks occur WITH positive flow (continuation, not reversal)
+    - When large bodies occur WITH flow direction (trend strength)
+    - Volume-wick interactions (supply/demand pressure)
+    """
+    df = df.copy()
+    
+    # Ensure we have the base features
+    # Use flow_cvd_60 (cumulative 60-min flow) if available, otherwise fall back to synthetic_order_flow
+    flow_col = "flow_cvd_60" if "flow_cvd_60" in df.columns else "synthetic_order_flow"
+    
+    if flow_col not in df.columns or "upper_wick" not in df.columns:
+        return df
+
+    # 1. The "Flow-Weighted Wick" (Replaces 'upper_wick')
+    # If Wick is Big AND Flow is Negative -> Bearish
+    # If Wick is Big BUT Flow is Positive -> Bullish Absorption (Don't Short)
+    df["wick_flow_interaction"] = df["upper_wick"] * np.sign(df[flow_col])
+    
+    # 2. The "Flow-Weighted Body" (Replaces 'is_bull')
+    # Replaces 'is_bull' with 'is_supported_bull'
+    # Big Green Body + Big Positive Flow = Strong Trend
+    # Big Green Body + Negative Flow = Fake Pump
+    df["body_flow_interaction"] = df["body"] * np.sign(df[flow_col])
+    
+    # 3. Effort vs Result (Volume / Range)
+    # We already have effort_ratio, but let's make it explicit for the wick
+    # High Volume on a Wick = Supply Injection (Bearish)
+    if "volume" in df.columns:
+        df["wick_volume_interaction"] = df["upper_wick"] * df["volume"]
+    
+    return df
+
+
 def build_complete_features(
     bars: pd.DataFrame,
     quotes: Optional[pd.DataFrame] = None,
-    horizons: list = [5, 15, 60],
+    horizons: list = [60],
     epsilon: float = 0.0005,
     tb_h_max: int = 60,
-    tb_tp_mult: float = 1.0,
+    tb_tp_mult: float = 1.5,
     tb_sl_mult: float = 1.0,
     drop_na: bool = True
 ) -> pd.DataFrame:
@@ -511,10 +646,20 @@ def build_complete_features(
     """
     print("Building complete feature matrix...")
     
-    # Merge quotes if provided
+# Merge quotes if provided
     if quotes is not None:
-        print("  Merging quotes into bars...")
-        df = merge_quotes_to_bars(bars, quotes)
+        print("  Merging quotes into bars (Basic)...")
+        # 1. Basic merge (Ask/Bid/Spread) - Keep your original function
+        df_basic = merge_quotes_to_bars(bars, quotes)
+        
+        # 2. Deep Microstructure Features (Entropy, Velocity, Effort)
+        print("  Calculating Deep Microstructure features...")
+        df_micro = generate_micro_features(quotes, bars)
+        
+        # 3. Join them
+        # Join on index (timestamp)
+        df = df_basic.join(df_micro)
+        
     else:
         df = bars.copy()
     
@@ -540,12 +685,16 @@ def build_complete_features(
     print("  Adding time features...")
     df = add_time_features(df)
     
+    print("  Adding regime detection features...")
+    df = add_regime_features(df)
+    
     # Add labels
     print("  Adding fixed-horizon labels...")
     df = add_fixed_horizon_labels(df, horizons=horizons, epsilon=epsilon)
     
     print("  Adding triple-barrier labels...")
-    df = add_triple_barrier_labels(df, h_max=tb_h_max, tp_mult=tb_tp_mult, sl_mult=tb_sl_mult)
+    # Create labels for the specified horizon only (y_tb_60)
+    df = add_triple_barrier_labels(df, h_max=tb_h_max, tp_mult=tb_tp_mult, sl_mult=tb_sl_mult, horizons=[tb_h_max])
     
     # Drop rows with NaN labels if requested
     if drop_na:
@@ -554,6 +703,10 @@ def build_complete_features(
         df = df.dropna(subset=label_cols)
         dropped = initial_rows - len(df)
         print(f"  Dropped {dropped:,} rows with NaN labels")
+    
+    # Add interaction features (combines price action with order flow)
+    print("  Adding interaction features...")
+    df = add_interaction_features(df)
     
     print(f"  ✓ Complete: {len(df):,} rows, {len(df.columns)} columns")
     

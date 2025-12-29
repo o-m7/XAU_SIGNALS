@@ -330,26 +330,102 @@ class PolygonStream:
         try:
             # Polygon aggregate format
             # s = start timestamp, e = end timestamp
+            # Sometimes Polygon sends arrays, sometimes single values
             ts_ms = msg.get("e") or msg.get("s", 0)
-            timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
             
-            event = StreamEvent(
-                type="bar",
-                timestamp=timestamp,
-                open=msg.get("o"),
-                high=msg.get("h"),
-                low=msg.get("l"),
-                close=msg.get("c"),
-                volume=msg.get("v"),
-                source=source,
-            )
-            
-            self._last_event_time = datetime.now(timezone.utc)
-            self._events_received += 1
-            self.on_event(event.to_dict())
+            # Handle both single values and arrays
+            if isinstance(ts_ms, (list, tuple)):
+                # If timestamp is an array, process each bar
+                opens = msg.get("o", [])
+                highs = msg.get("h", [])
+                lows = msg.get("l", [])
+                closes = msg.get("c", [])
+                volumes = msg.get("v", [])
+                
+                # Ensure all are lists
+                if not isinstance(opens, (list, tuple)):
+                    opens = [opens]
+                if not isinstance(highs, (list, tuple)):
+                    highs = [highs]
+                if not isinstance(lows, (list, tuple)):
+                    lows = [lows]
+                if not isinstance(closes, (list, tuple)):
+                    closes = [closes]
+                if not isinstance(volumes, (list, tuple)):
+                    volumes = [volumes]
+                
+                # Find the minimum length to avoid index mismatches
+                # Polygon sometimes sends arrays of slightly different lengths
+                n_bars = min(
+                    len(ts_ms),
+                    len(opens) if isinstance(opens, (list, tuple)) else 1,
+                    len(highs) if isinstance(highs, (list, tuple)) else 1,
+                    len(lows) if isinstance(lows, (list, tuple)) else 1,
+                    len(closes) if isinstance(closes, (list, tuple)) else 1,
+                    len(volumes) if isinstance(volumes, (list, tuple)) else 1,
+                )
+                
+                # Process each bar in the batch (only up to minimum length)
+                for i in range(n_bars):
+                    try:
+                        # Safely extract values with bounds checking
+                        timestamp = datetime.fromtimestamp(ts_ms[i] / 1000, tz=timezone.utc)
+                        event = StreamEvent(
+                            type="bar",
+                            timestamp=timestamp,
+                            open=opens[i] if isinstance(opens, (list, tuple)) and i < len(opens) else (opens if not isinstance(opens, (list, tuple)) else None),
+                            high=highs[i] if isinstance(highs, (list, tuple)) and i < len(highs) else (highs if not isinstance(highs, (list, tuple)) else None),
+                            low=lows[i] if isinstance(lows, (list, tuple)) and i < len(lows) else (lows if not isinstance(lows, (list, tuple)) else None),
+                            close=closes[i] if isinstance(closes, (list, tuple)) and i < len(closes) else (closes if not isinstance(closes, (list, tuple)) else None),
+                            volume=volumes[i] if isinstance(volumes, (list, tuple)) and i < len(volumes) else (volumes if not isinstance(volumes, (list, tuple)) else None),
+                            source=source,
+                        )
+                        self._last_event_time = datetime.now(timezone.utc)
+                        self._events_received += 1
+                        self.on_event(event.to_dict())
+                    except (IndexError, TypeError, ValueError, KeyError) as e:
+                        logger.debug(f"Skipping invalid bar in batch (index {i}/{n_bars}): {e}")
+                        continue
+            else:
+                # Single aggregate bar
+                timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+                
+                # Extract values, handling both single values and arrays
+                open_val = msg.get("o")
+                high_val = msg.get("h")
+                low_val = msg.get("l")
+                close_val = msg.get("c")
+                volume_val = msg.get("v")
+                
+                # If any value is an array, take the last element (most recent)
+                if isinstance(open_val, (list, tuple)) and len(open_val) > 0:
+                    open_val = open_val[-1]
+                if isinstance(high_val, (list, tuple)) and len(high_val) > 0:
+                    high_val = high_val[-1]
+                if isinstance(low_val, (list, tuple)) and len(low_val) > 0:
+                    low_val = low_val[-1]
+                if isinstance(close_val, (list, tuple)) and len(close_val) > 0:
+                    close_val = close_val[-1]
+                if isinstance(volume_val, (list, tuple)) and len(volume_val) > 0:
+                    volume_val = volume_val[-1]
+                
+                event = StreamEvent(
+                    type="bar",
+                    timestamp=timestamp,
+                    open=open_val,
+                    high=high_val,
+                    low=low_val,
+                    close=close_val,
+                    volume=volume_val,
+                    source=source,
+                )
+                
+                self._last_event_time = datetime.now(timezone.utc)
+                self._events_received += 1
+                self.on_event(event.to_dict())
             
         except Exception as e:
-            logger.error(f"Error processing aggregate: {e}")
+            logger.error(f"Error processing aggregate: {e}", exc_info=True)
     
     def _on_ws_error(self, ws, error):
         """Handle WebSocket error."""

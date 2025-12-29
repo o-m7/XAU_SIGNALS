@@ -24,12 +24,18 @@ from typing import Dict, List, Optional, Any
 from collections import deque
 import numpy as np
 import pandas as pd
+import warnings
+
+# Suppress pandas FutureWarnings about fillna downcasting
+warnings.filterwarnings('ignore', category=FutureWarning, message='.*Downcasting.*')
 
 logger = logging.getLogger("FeatureBuffer")
 
 
-# Feature names must match training EXACTLY
+# Feature names must match training EXACTLY (60 features from model)
 FEATURE_NAMES = [
+    'micro_velocity', 'micro_entropy', 'effort_ratio', 'spread_zscore',
+    'synthetic_order_flow', 'flow_cvd_60', 'flow_divergence',
     'ret_1', 'ret_3', 'ret_5', 'ret_10', 'log_ret_1',
     'ret_mean_5', 'ret_mean_20', 'ret_mean_60',
     'vol_10', 'vol_60', 'hl_range', 'norm_range', 'ATR_14',
@@ -42,6 +48,9 @@ FEATURE_NAMES = [
     'ma_fast_15', 'ma_slow_60', 'ma_ratio', 'ma_slope_60',
     'minute_sin', 'minute_cos', 'day_of_week',
     'is_asia', 'is_europe', 'is_us',
+    'adx', 'adx_slope', 'efficiency_ratio', 'atr_percentile',
+    'regime_trending', 'regime_ranging', 'regime_volatile',
+    'wick_flow_interaction', 'body_flow_interaction', 'wick_volume_interaction',
 ]
 
 # Minimum bars needed for all features
@@ -378,10 +387,10 @@ class FeatureBuffer:
             df["spread"] = 0.0
             df["spread_pct"] = 0.0
         
-        # Fill NaN mid with close
-        df["mid"] = df["mid"].fillna(df["close"])
-        df["spread"] = df["spread"].fillna(0)
-        df["spread_pct"] = df["spread_pct"].fillna(0)
+        # Fill NaN mid with close (fix FutureWarning)
+        df["mid"] = df["mid"].infer_objects(copy=False).fillna(df["close"])
+        df["spread"] = df["spread"].infer_objects(copy=False).fillna(0)
+        df["spread_pct"] = df["spread_pct"].infer_objects(copy=False).fillna(0)
         
         df["mid_ret_1"] = df["mid"].pct_change(1)
         df["mid_vol_20"] = df["mid_ret_1"].rolling(20).std()
@@ -400,16 +409,16 @@ class FeatureBuffer:
         # Volume & Liquidity
         # =================================================================
         df["vol_change"] = df["volume"] / df["volume"].shift(1) - 1
-        df["vol_change"] = df["vol_change"].replace([np.inf, -np.inf], 0).fillna(0)
+        df["vol_change"] = df["vol_change"].replace([np.inf, -np.inf], 0).infer_objects(copy=False).fillna(0)
         
         vol_median_20 = df["volume"].rolling(20).median()
         df["vol_rel_20"] = df["volume"] / vol_median_20.replace(0, np.nan)
-        df["vol_rel_20"] = df["vol_rel_20"].fillna(1)
+        df["vol_rel_20"] = df["vol_rel_20"].infer_objects(copy=False).fillna(1)
         
         vol_mean_20 = df["volume"].rolling(20).mean()
         vol_std_20 = df["volume"].rolling(20).std()
         df["vol_zscore_20"] = (df["volume"] - vol_mean_20) / vol_std_20.replace(0, np.nan)
-        df["vol_zscore_20"] = df["vol_zscore_20"].fillna(0)
+        df["vol_zscore_20"] = df["vol_zscore_20"].infer_objects(copy=False).fillna(0)
         
         df["dollar_vol"] = df["close"] * df["volume"]
         
@@ -473,6 +482,136 @@ class FeatureBuffer:
             df["is_asia"] = 0
             df["is_europe"] = 0
             df["is_us"] = 0
+        
+        # =================================================================
+        # Microstructure Features (simplified for minute bars)
+        # =================================================================
+        # Note: Full microstructure features require tick-level quotes.
+        # These are approximations using minute bars.
+        
+        # micro_velocity: Approximate as tick count (use volume as proxy)
+        df["micro_velocity"] = df["volume"].infer_objects(copy=False).fillna(0)
+        
+        # micro_entropy: Approximate using price direction variance
+        price_dir = np.sign(df["close"].diff()).fillna(0)
+        entropy_vals = []
+        for i in range(len(price_dir)):
+            if i < 10:
+                entropy_vals.append(0.5)
+            else:
+                window = price_dir.iloc[max(0, i-19):i+1]
+                unique_count = len(np.unique(window))
+                entropy_vals.append(unique_count / max(len(window), 1))
+        df["micro_entropy"] = pd.Series(entropy_vals, index=df.index).infer_objects(copy=False).fillna(0.5)
+        
+        # effort_ratio: Range / Volume (already computed, but ensure it exists)
+        df["effort_ratio"] = np.where(
+            df["micro_velocity"] > 0,
+            df["range"] / (df["micro_velocity"] + 1),
+            0
+        )
+        
+        # spread_zscore: Z-score of spread
+        spread_mean = df["spread"].rolling(60, min_periods=10).mean()
+        spread_std = df["spread"].rolling(60, min_periods=10).std()
+        df["spread_zscore"] = pd.Series(
+            np.where(
+                spread_std > 0,
+                (df["spread"] - spread_mean) / spread_std,
+                0
+            ),
+            index=df.index
+        ).infer_objects(copy=False).fillna(0)
+        
+        # synthetic_order_flow: Approximate using price direction * volume
+        df["synthetic_order_flow"] = price_dir * df["volume"]
+        
+        # flow_cvd_60: Cumulative volume delta over 60 minutes
+        df["flow_cvd_60"] = df["synthetic_order_flow"].rolling(60, min_periods=10).sum().infer_objects(copy=False).fillna(0)
+        
+        # flow_divergence: Normalized price return vs flow trend
+        ret_60 = df["close"].pct_change(60)
+        ret_mean = ret_60.rolling(100, min_periods=20).mean()
+        ret_std = ret_60.rolling(100, min_periods=20).std()
+        ret_norm = pd.Series(
+            np.where(ret_std > 0, (ret_60 - ret_mean) / ret_std, 0),
+            index=df.index
+        )
+        
+        flow_mean = df["flow_cvd_60"].rolling(100, min_periods=20).mean()
+        flow_std = df["flow_cvd_60"].rolling(100, min_periods=20).std()
+        flow_norm = pd.Series(
+            np.where(flow_std > 0, (df["flow_cvd_60"] - flow_mean) / flow_std, 0),
+            index=df.index
+        )
+        
+        df["flow_divergence"] = flow_norm - ret_norm
+        
+        # =================================================================
+        # Regime Detection Features
+        # =================================================================
+        # ADX calculation
+        high = df["high"]
+        low = df["low"]
+        close = df["close"]
+        
+        # True Range
+        tr1 = high - low
+        tr2 = (high - close.shift(1)).abs()
+        tr3 = (low - close.shift(1)).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        
+        # Directional Movement
+        up_move = high - high.shift(1)
+        down_move = low.shift(1) - low
+        
+        # Create Series with proper index alignment
+        plus_dm = pd.Series(
+            np.where((up_move > down_move) & (up_move > 0), up_move, 0),
+            index=df.index
+        )
+        minus_dm = pd.Series(
+            np.where((down_move > up_move) & (down_move > 0), down_move, 0),
+            index=df.index
+        )
+        
+        # Smoothed indicators
+        atr_14 = tr.ewm(span=14, adjust=False).mean()
+        plus_di = 100 * plus_dm.ewm(span=14, adjust=False).mean() / atr_14
+        minus_di = 100 * minus_dm.ewm(span=14, adjust=False).mean() / atr_14
+        
+        # ADX
+        dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di + 1e-8)
+        df["adx"] = dx.ewm(span=14, adjust=False).mean().infer_objects(copy=False).fillna(0)
+        df["adx_slope"] = df["adx"].diff(5).infer_objects(copy=False).fillna(0)
+        
+        # Efficiency Ratio (Kaufman)
+        efficiency_window = 20
+        net_change = (close - close.shift(efficiency_window)).abs()
+        sum_changes = close.diff().abs().rolling(efficiency_window).sum()
+        df["efficiency_ratio"] = (net_change / (sum_changes + 1e-8)).infer_objects(copy=False).fillna(0)
+        
+        # ATR percentile
+        atr_lookback = 100
+        df["atr_percentile"] = df["ATR_14"].rolling(atr_lookback, min_periods=10).apply(
+            lambda x: pd.Series(x).rank(pct=True).iloc[-1] if len(x) > 0 else 0.5,
+            raw=False
+        ).infer_objects(copy=False).fillna(0.5)
+        
+        # Regime flags
+        df["regime_trending"] = ((df["adx"] > 25) & (df["efficiency_ratio"] > 0.5)).astype(int)
+        df["regime_ranging"] = ((df["adx"] < 20) & (df["atr_percentile"] < 0.75)).astype(int)
+        df["regime_volatile"] = (df["atr_percentile"] > 0.75).astype(int)
+        
+        # =================================================================
+        # Interaction Features
+        # =================================================================
+        # Use flow_cvd_60 for interactions (if available, else synthetic_order_flow)
+        flow_col = "flow_cvd_60" if "flow_cvd_60" in df.columns else "synthetic_order_flow"
+        
+        df["wick_flow_interaction"] = df["upper_wick"] * np.sign(df[flow_col])
+        df["body_flow_interaction"] = df["body"] * np.sign(df[flow_col])
+        df["wick_volume_interaction"] = df["upper_wick"] * df["volume"]
         
         # Clean up temp columns
         for col in ["prev_close", "tr"]:

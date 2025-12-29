@@ -136,6 +136,72 @@ class SignalEngine:
         else:
             signal = Signal.FLAT
         
+        # =====================================================================
+        # WICK FILTER: Prevent shorting bullish absorption wicks
+        # =====================================================================
+        # If model wants to SHORT a large upper wick (bearish pattern)
+        # BUT order flow is positive (buying into the wick)
+        # This is a "bullish absorption" - don't short it!
+        # =====================================================================
+        if signal == Signal.SHORT:
+            try:
+                # Check if required features exist
+                required_cols = ['upper_wick', 'range', 'synthetic_order_flow']
+                if all(col in feature_row.columns for col in required_cols):
+                    # Get current candle metrics (feature_row is a single-row DataFrame)
+                    current_candle = feature_row.iloc[0]
+                    upper_wick = current_candle['upper_wick']
+                    range_val = current_candle['range']
+                    flow = current_candle['synthetic_order_flow']
+                    
+                    # Calculate upper wick percentage
+                    if range_val > 0:
+                        upper_wick_pct = upper_wick / range_val
+                        
+                        # Trap condition: Large upper wick (>30%) + Positive flow = Bullish absorption
+                        # This means buyers are absorbing the selling pressure - don't short!
+                        if upper_wick_pct > 0.3 and flow > 0:
+                            logger.warning(
+                                f"⛔ FILTERED: Model shorting a Bullish Absorption Wick. "
+                                f"Wick={upper_wick_pct:.2%}, Flow={flow:.4f}"
+                            )
+                            signal = Signal.FLAT
+            except Exception as e:
+                logger.debug(f"Wick filter check failed (non-critical): {e}")
+                # Continue with original signal if filter check fails
+        
+        # =====================================================================
+        # CHURN FILTER: Validate signal using close_mid_diff (Feature #2)
+        # =====================================================================
+        # If Volume is massive but Price isn't moving, it's a coin toss.
+        # We use close_mid_diff to detect aggressive buying/selling at close.
+        # =====================================================================
+        conviction = 1.0  # Default: full conviction
+        if signal != Signal.FLAT:
+            conviction = self._validate_signal(signal, feature_row)
+            
+            # =====================================================================
+            # VOLATILITY FILTER: High win-rate strategies avoid dead markets
+            # =====================================================================
+            # Reject trades when volatility is too low (spread kills you) or
+            # spread is too high (cost kills you)
+            # =====================================================================
+            if not self._check_volatility_filter(feature_row):
+                logger.warning(
+                    f"⚠️ FILTERED: Volatility filter failed. Market conditions not suitable."
+                )
+                signal = Signal.FLAT
+                conviction = 0.0
+            
+            # If conviction is too low, treat as FLAT
+            elif conviction < 0.5:
+                logger.warning(
+                    f"⚠️ FILTERED: Low conviction signal ({conviction:.2f}). "
+                    f"Signal changed to FLAT."
+                )
+                signal = Signal.FLAT
+                conviction = 0.0
+        
         # Calculate TP/SL if we have price and ATR
         tp_price, sl_price = None, None
         if current_price and signal != Signal.FLAT:
@@ -143,7 +209,103 @@ class SignalEngine:
                 signal, current_price, feature_row, proba_up
             )
         
-        return self._make_result(signal, proba_up, timestamp, current_price, tp_price, sl_price)
+        return self._make_result(signal, proba_up, timestamp, current_price, tp_price, sl_price, conviction=conviction)
+    
+    def _check_volatility_filter(self, feature_row: pd.DataFrame) -> bool:
+        """
+        Smart Volatility Filter: The Win Rate Booster.
+        
+        High win-rate strategies avoid:
+        - Low volatility (where spread kills you)
+        - Extreme spread (where cost kills you)
+        
+        Returns True if volatility is good for a High-WR trade.
+        """
+        try:
+            required_cols = ['ATR_14', 'spread']
+            if not all(col in feature_row.columns for col in required_cols):
+                # If we don't have the features, allow the trade (fail open)
+                return True
+            
+            current_bar = feature_row.iloc[0]
+            
+            # 1. Check ATR (Is there enough juice to cover spread?)
+            min_atr = 0.50  # Minimum 50 cents move expected
+            if current_bar['ATR_14'] < min_atr:
+                logger.debug(f"Volatility filter: ATR too low ({current_bar['ATR_14']:.2f} < {min_atr})")
+                return False  # Market is dead, don't trade
+            
+            # 2. Check Spread (Is cost too high?)
+            max_spread = 0.20  # Max 20 cents spread
+            if current_bar['spread'] > max_spread:
+                logger.debug(f"Volatility filter: Spread too high ({current_bar['spread']:.2f} > {max_spread})")
+                return False  # Too expensive
+            
+            return True
+            
+        except Exception as e:
+            logger.debug(f"Volatility filter check failed (non-critical): {e}")
+            # Default to allowing trade if check fails
+            return True
+    
+    def _validate_signal(self, signal: Signal, feature_row: pd.DataFrame) -> float:
+        """
+        The "Churn" Filter: Validate signal using close_mid_diff (Feature #2).
+        
+        If Volume is massive but Price isn't moving, it's a coin toss.
+        We use close_mid_diff to detect aggressive buying/selling at close.
+        
+        Args:
+            signal: 1 (Long) or -1 (Short) - but we use Signal enum
+            feature_row: Single-row DataFrame with features
+            
+        Returns:
+            conviction: 1.0 (full conviction) or 0.5 (reduced risk) or 0.0 (no trade)
+        """
+        try:
+            # Check if required features exist
+            required_cols = ['close_mid_diff', 'volume', 'range']
+            if not all(col in feature_row.columns for col in required_cols):
+                # If we don't have the features, default to full conviction
+                return 1.0
+            
+            current_bar = feature_row.iloc[0]
+            
+            # 1. Check for Volume Churn (High Vol / Low Range)
+            # This detects when there's high volume but low price movement
+            vol_churn = current_bar['volume'] / (current_bar['range'] + 0.0001)
+            
+            # 2. Check Aggressor status using close_mid_diff (Feature #2)
+            # close_mid_diff = close - mid
+            # If Close is below Mid, Sellers are aggressive at the close.
+            # If Close is above Mid, Buyers are aggressive at the close.
+            close_mid = current_bar['close_mid_diff']
+            
+            if signal == Signal.LONG:  # Model wants to go LONG
+                # BUT Close is below Midpoint (Aggressive Selling)
+                if close_mid < 0:
+                    logger.warning(
+                        f"⚠️ CAUTION: Model Long, but closing on the Bid (Weak Close). "
+                        f"close_mid_diff={close_mid:.4f}. Reducing Risk."
+                    )
+                    return 0.5  # Half Size or No Trade
+                    
+            elif signal == Signal.SHORT:  # Model wants to go SHORT
+                # BUT Close is above Midpoint (Aggressive Buying)
+                if close_mid > 0:
+                    logger.warning(
+                        f"⚠️ CAUTION: Model Short, but closing on the Ask (Strong Close). "
+                        f"close_mid_diff={close_mid:.4f}. Reducing Risk."
+                    )
+                    return 0.5  # Half Size or No Trade
+            
+            # Signal direction matches close aggressor direction - full conviction
+            return 1.0
+            
+        except Exception as e:
+            logger.debug(f"Churn filter check failed (non-critical): {e}")
+            # Default to full conviction if check fails
+            return 1.0
     
     def _calculate_tp_sl(
         self,
@@ -207,7 +369,8 @@ class SignalEngine:
         price: Optional[float] = None,
         tp_price: Optional[float] = None,
         sl_price: Optional[float] = None,
-        error: Optional[str] = None
+        error: Optional[str] = None,
+        conviction: float = 1.0
     ) -> Dict:
         """Create signal result dict."""
         return {
@@ -220,6 +383,7 @@ class SignalEngine:
             "threshold_long": self.threshold_long,
             "threshold_short": self.threshold_short,
             "error": error,
+            "conviction": conviction,  # 1.0 = full, 0.5 = reduced, 0.0 = filtered
         }
     
     def get_feature_list(self) -> List[str]:

@@ -31,18 +31,21 @@ start() {
     
     echo "Starting XAUUSD Signal Engine..."
     
-    # Prevent Mac from sleeping (keeps running when lid closed if plugged in)
-    caffeinate -s -w $$ &
-    CAFFEINE_PID=$!
-    echo $CAFFEINE_PID > "$CAFFEINE_PIDFILE"
-    echo "☕ Caffeinate started (PID: $CAFFEINE_PID) - Mac will stay awake"
+    # Note: Laptop can sleep normally. If laptop sleeps, process will pause.
+    # For 24/7 operation, deploy to Railway/cloud (see DEPLOY_CLOUD.md)
+    # If you want to prevent sleep while running, uncomment the caffeinate line below:
+    # caffeinate -w $$ &
+    # CAFFEINE_PID=$!
+    # echo $CAFFEINE_PID > "$CAFFEINE_PIDFILE"
+    echo "ℹ️  Laptop can sleep normally. Process will pause if laptop sleeps."
+    echo "   For 24/7 operation, deploy to Railway/cloud (see DEPLOY_CLOUD.md)"
     
-    # Set WS_MODE=quotes to connect to only 1 WebSocket channel (most stable)
+    # Set WS_MODE=all to connect to all WebSocket channels (quotes, minute, second aggregates)
     export WS_MODE=all
     nohup python -m src.live.live_runner \
         --backfill \
         --threshold_long 0.70 \
-        --threshold_short 0.20 \
+        --threshold_short 0.30 \
         >> "$LOGFILE" 2>&1 &
     
     echo $! > "$PIDFILE"
@@ -52,7 +55,8 @@ start() {
         echo "✅ Signal engine started (PID: $(cat $PIDFILE))"
         echo "   Logs: tail -f $LOGFILE"
         echo ""
-        echo "⚠️  IMPORTANT: Keep laptop plugged in to prevent sleep!"
+        echo "ℹ️  Note: Laptop can sleep normally. Process will pause if laptop sleeps."
+        echo "   For 24/7 operation, deploy to Railway/cloud (see DEPLOY_CLOUD.md)"
     else
         echo "❌ Failed to start signal engine"
         rm -f "$PIDFILE" "$CAFFEINE_PIDFILE"

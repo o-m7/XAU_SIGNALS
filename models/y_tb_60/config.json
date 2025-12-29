@@ -1,5 +1,12 @@
 {
   "feature_columns": [
+    "micro_velocity",
+    "micro_entropy",
+    "effort_ratio",
+    "spread_zscore",
+    "synthetic_order_flow",
+    "flow_cvd_60",
+    "flow_divergence",
     "ret_1",
     "ret_3",
     "ret_5",
@@ -42,27 +49,37 @@
     "day_of_week",
     "is_asia",
     "is_europe",
-    "is_us"
+    "is_us",
+    "adx",
+    "adx_slope",
+    "efficiency_ratio",
+    "atr_percentile",
+    "regime_trending",
+    "regime_ranging",
+    "regime_volatile",
+    "wick_flow_interaction",
+    "body_flow_interaction",
+    "wick_volume_interaction"
   ],
   "label_column": "y_tb_60",
   "model_type": "HistGradientBoostingClassifier",
   "model_params": {
-    "max_depth": 5,
-    "learning_rate": 0.02,
-    "max_iter": 400,
-    "min_samples_leaf": 400,
-    "l2_regularization": 0.3,
+    "max_depth": 3,
+    "learning_rate": 0.01,
+    "max_iter": 200,
+    "min_samples_leaf": 1000,
+    "l2_regularization": 0.5,
     "max_leaf_nodes": null,
     "early_stopping": true,
-    "validation_fraction": 0.1,
+    "validation_fraction": 0.15,
     "random_state": 42,
     "verbose": 0
   },
   "tuned_params": {
-    "max_depth": 5,
-    "min_samples_leaf": 400,
-    "learning_rate": 0.02,
-    "l2_regularization": 0.3
+    "max_depth": 3,
+    "min_samples_leaf": 1000,
+    "learning_rate": 0.01,
+    "l2_regularization": 0.5
   },
   "split_ratios": {
     "train": 0.7,

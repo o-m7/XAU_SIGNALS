@@ -63,6 +63,10 @@ from .risk_guard import RiskGuard
 from .symbol_resolver import SymbolResolver
 from .backfill import backfill_feature_buffer
 
+# Suppress pandas FutureWarnings
+import warnings
+warnings.filterwarnings('ignore', category=FutureWarning, message='.*Downcasting.*')
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -434,15 +438,25 @@ class LiveRunner:
         tp = result.get("tp")
         sl = result.get("sl")
         
-        # Log signal
+        # Log signal (reduce noise for FLAT signals)
         price_str = f"{self._current_price:.2f}" if self._current_price else "N/A"
         tp_str = f"{tp:.2f}" if tp else "N/A"
         sl_str = f"{sl:.2f}" if sl else "N/A"
-        logger.info(f"Signal: {signal} | P(up)={proba_up:.4f} | Price={price_str} | TP={tp_str} | SL={sl_str}")
+        conviction = result.get("conviction", 1.0)
+        conviction_str = f"Conviction={conviction:.2f}" if conviction < 1.0 else ""
         
-        # Skip FLAT signals
+        # Skip FLAT signals (don't log every FLAT to reduce noise)
         if signal == "FLAT":
+            # Only log FLAT occasionally (every 100th) to show system is working
+            if not hasattr(self, '_flat_count'):
+                self._flat_count = 0
+            self._flat_count += 1
+            if self._flat_count % 100 == 0:
+                logger.debug(f"Signal: {signal} | P(up)={proba_up:.4f} | Price={price_str} (processed {self._flat_count} FLAT signals)")
             return
+        
+        # Always log non-FLAT signals
+        logger.info(f"🎯 Signal: {signal} | P(up)={proba_up:.4f} | Price={price_str} | TP={tp_str} | SL={sl_str} {conviction_str}")
         
         # Check risk rules with confidence-based gating
         decision = self.risk_guard.check_signal(signal, proba_up, timestamp)
@@ -460,6 +474,20 @@ class LiveRunner:
             else:
                 confidence = 1 - proba_up
             
+            # Get conviction score (if available)
+            conviction = result.get("conviction", 1.0)
+            
+            # Adjust risk based on conviction (reduce risk for low-conviction signals)
+            adjusted_risk = self.risk_pct * conviction if conviction > 0 else self.risk_pct
+            
+            # Build extra info with conviction warning if needed
+            extra_info = {
+                "Cooldown": f"{decision.cooldown_s}s",
+                "DD": f"{self.risk_guard.get_status()['drawdown_pct']*100:.2f}%",
+            }
+            if conviction < 1.0:
+                extra_info["⚠️ Conviction"] = f"{conviction:.0%} (Reduced Risk)"
+            
             # Send Telegram notification with TP/SL
             self.telegram_bot.send_signal(
                 signal=signal,
@@ -468,11 +496,8 @@ class LiveRunner:
                 price=self._current_price,
                 tp=tp,
                 sl=sl,
-                risk_pct=self.risk_pct,
-                extra_info={
-                    "Cooldown": f"{decision.cooldown_s}s",
-                    "DD": f"{self.risk_guard.get_status()['drawdown_pct']*100:.2f}%",
-                }
+                risk_pct=adjusted_risk,  # Use adjusted risk
+                extra_info=extra_info
             )
             
             logger.info(f"🔔 SIGNAL SENT: {signal} @ {self._current_price:.2f} | TP={tp_str} | SL={sl_str}")

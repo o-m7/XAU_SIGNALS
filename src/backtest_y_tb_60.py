@@ -27,7 +27,7 @@ import joblib
 # =============================================================================
 
 PROJECT_ROOT = Path(__file__).parent.parent
-FEATURES_PATH = PROJECT_ROOT / "data" / "features" / "xauusd_features_2024.parquet"
+FEATURES_PATH = PROJECT_ROOT / "data" / "features" / "xauusd_features_2020_2025.parquet"
 MODEL_PATH = PROJECT_ROOT / "models" / "y_tb_60_hgb_tuned.joblib"
 
 # Split ratios (must match train_y_tb_60.py)

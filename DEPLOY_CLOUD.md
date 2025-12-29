@@ -28,7 +28,9 @@
    - `TELEGRAM_CHAT_ID` - Your Telegram chat ID
    - `BASE_SYMBOL` - XAU (default)
    - `QUOTE_SYMBOL` - USD (default)
-   - `WS_MODE` - all (or quotes for single channel)
+   - **`WS_MODE`** - **MUST be set to `all`** (connects to all 3 channels: quotes, minute aggregates, second aggregates)
+     - ⚠️ **CRITICAL**: If `WS_MODE` is not set or set to anything other than `all`, the system will only connect to 1 channel (quotes)
+     - Check logs for: `🔧 Environment WS_MODE:` to verify it's being read correctly
 
 4. **Monitor:**
    ```bash

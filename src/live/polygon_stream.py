@@ -306,6 +306,13 @@ class PolygonStream:
                 logger.error("Check your Polygon API key and plan. Stopping reconnection attempts.")
                 self._running = False  # Stop the reconnection loop
                 
+            elif status == "max_connections":
+                # Stop trying to reconnect if max connections exceeded
+                logger.error(f"MAX CONNECTIONS EXCEEDED: {message}")
+                logger.error("You have reached the connection limit. Please close other instances.")
+                logger.error("If running locally, stop it. Only run on Railway or one instance at a time.")
+                self._running = False  # Stop the reconnection loop
+                
         elif ev == "C":
             # Forex quote
             self._handle_quote(msg)

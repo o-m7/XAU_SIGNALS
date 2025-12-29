@@ -189,8 +189,12 @@ class PolygonStream:
         self._running = True
         self._reconnect_count = 0
         
-        channels = self._get_subscription_channels()
-        logger.info(f"Starting Polygon stream with {len(channels)} channels: {channels}")
+        # Store target channels (only set once, persist across reconnects)
+        if not self._target_channels:
+            self._target_channels = self._get_subscription_channels()
+            logger.info(f"🎯 Target channels set: {len(self._target_channels)} channels: {', '.join(self._target_channels)}")
+        else:
+            logger.info(f"🔄 Reusing existing target channels: {len(self._target_channels)} channels: {', '.join(self._target_channels)}")
         
         self._start_websocket()
         
@@ -274,16 +278,26 @@ class PolygonStream:
             logger.info(f"Status: {status} - {message}")
             
             if status == "auth_success":
-                # Subscribe to configured channel(s)
-                channels = self._get_subscription_channels()
-                logger.info(f"🔌 Subscribing to {len(channels)} channel(s): {', '.join(channels)}")
-                for channel in channels:
-                    sub_msg = {"action": "subscribe", "params": channel}
-                    self._ws.send(json.dumps(sub_msg))
-                    logger.info(f"  ✓ Subscribed to: {channel}")
-                    self._subscribed_channels.append(channel)
-                    time.sleep(0.1)  # Small delay between subscriptions
-                logger.info(f"✅ Successfully connected to all {len(channels)} channels: {', '.join(channels)}")
+                # Subscribe to the SAME target channels (don't regenerate list)
+                if not self._target_channels:
+                    # Fallback: get channels if target_channels not set (shouldn't happen)
+                    self._target_channels = self._get_subscription_channels()
+                    logger.warning("⚠️ Target channels not set, regenerating (shouldn't happen)")
+                
+                # Only subscribe to channels we're not already subscribed to
+                channels_to_subscribe = [ch for ch in self._target_channels if ch not in self._subscribed_channels]
+                
+                if channels_to_subscribe:
+                    logger.info(f"🔌 Subscribing to {len(channels_to_subscribe)} channel(s): {', '.join(channels_to_subscribe)}")
+                    for channel in channels_to_subscribe:
+                        sub_msg = {"action": "subscribe", "params": channel}
+                        self._ws.send(json.dumps(sub_msg))
+                        logger.info(f"  ✓ Subscribed to: {channel}")
+                        self._subscribed_channels.append(channel)
+                        time.sleep(0.1)  # Small delay between subscriptions
+                    logger.info(f"✅ Successfully connected to all {len(self._subscribed_channels)} channels: {', '.join(self._subscribed_channels)}")
+                else:
+                    logger.info(f"✅ Already subscribed to all {len(self._subscribed_channels)} channels: {', '.join(self._subscribed_channels)}")
             
             elif status == "auth_failed":
                 # Stop trying to reconnect on auth failure
@@ -450,7 +464,11 @@ class PolygonStream:
         
         if self._running:
             self._reconnect_count += 1
-            self._subscribed_channels = []  # Clear subscriptions
+            # Clear active subscriptions (will resubscribe to same target_channels on reconnect)
+            # BUT keep _target_channels so we resubscribe to the SAME channels
+            old_channels = self._subscribed_channels.copy()
+            self._subscribed_channels = []
+            logger.info(f"🔄 Reconnecting... Will resubscribe to same {len(self._target_channels)} channels: {', '.join(self._target_channels)}")
             
             # Limit reconnection attempts to avoid infinite loop
             if self._reconnect_count > 10:

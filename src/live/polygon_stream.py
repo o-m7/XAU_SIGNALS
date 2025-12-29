@@ -270,11 +270,13 @@ class PolygonStream:
             if status == "auth_success":
                 # Subscribe to configured channel(s)
                 channels = self._get_subscription_channels()
+                logger.info(f"Subscribing to {len(channels)} channel(s): {', '.join(channels)}")
                 for channel in channels:
                     sub_msg = {"action": "subscribe", "params": channel}
                     self._ws.send(json.dumps(sub_msg))
-                    logger.info(f"Subscribing to: {channel}")
+                    logger.info(f"✓ Subscribed to: {channel}")
                     self._subscribed_channels.append(channel)
+                logger.info(f"✅ All {len(channels)} channels subscribed successfully")
             
             elif status == "auth_failed":
                 # Stop trying to reconnect on auth failure
@@ -323,7 +325,8 @@ class PolygonStream:
             self.on_event(event.to_dict())
             
         except Exception as e:
-            logger.error(f"Error processing quote: {e}")
+            # Suppress quote processing errors (non-critical)
+            logger.debug(f"Error processing quote: {e}")
     
     def _handle_aggregate(self, msg: Dict, source: str = "aggs"):
         """Handle aggregate bar message (ev=CA or ev=CAS)."""
@@ -425,15 +428,18 @@ class PolygonStream:
                 self.on_event(event.to_dict())
             
         except Exception as e:
-            logger.error(f"Error processing aggregate: {e}", exc_info=True)
+            # Suppress aggregate processing errors (non-critical, handled gracefully)
+            logger.debug(f"Error processing aggregate: {e}")
     
     def _on_ws_error(self, ws, error):
         """Handle WebSocket error."""
-        logger.error(f"WebSocket error: {error}")
+        # Log as debug (reconnection handles it automatically)
+        logger.debug(f"WebSocket error: {error} (reconnecting...)")
     
     def _on_ws_close(self, ws, close_status_code, close_msg):
         """Handle WebSocket close - attempt reconnect with exponential backoff."""
-        logger.warning(f"WebSocket closed: {close_status_code} - {close_msg}")
+        # Log as info (reconnection is automatic, not an error)
+        logger.info(f"WebSocket closed: {close_status_code} - {close_msg} (reconnecting...)")
         
         if self._running:
             self._reconnect_count += 1

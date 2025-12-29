@@ -397,6 +397,13 @@ class LiveRunner:
         else:  # bar
             self._current_price = event.get("close")
         
+        # Log price regularly (every 10 events to show activity without spam)
+        if not hasattr(self, '_price_log_count'):
+            self._price_log_count = 0
+        self._price_log_count += 1
+        if self._price_log_count % 10 == 0 and self._current_price:
+            logger.info(f"💰 Price: {self._current_price:.2f} | Source: {event.get('source', 'unknown')}")
+        
         # Update feature buffer based on event type
         if event["type"] == "quote":
             feature_row = self.feature_buffer.update_from_quote(event)

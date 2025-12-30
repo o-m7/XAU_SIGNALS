@@ -287,8 +287,8 @@ class LiveRunner:
                 ModelConfig(
                     name="model3",
                     model_path=str(model3_path),
-                    threshold_long=0.70,  # TODO: Run backtest_model3.py to find optimal
-                    threshold_short=0.35,  # TODO: Run backtest_model3.py to find optimal
+                    threshold_long=0.60,  # Optimal from backtest (45.9% L / 54.1% S)
+                    threshold_short=0.26,  # Optimal from backtest (Sharpe 2.76)
                     enabled=model3_path.exists()  # Only enable if model exists
                 ),
             ]
@@ -691,15 +691,15 @@ def main():
     parser.add_argument(
         "--threshold_long",
         type=float,
-        default=0.55,
-        help="Probability threshold for LONG signals"
+        default=0.74,
+        help="Probability threshold for LONG signals (Model 1 optimal from backtest)"
     )
 
     parser.add_argument(
         "--threshold_short",
         type=float,
-        default=0.45,
-        help="Probability threshold for SHORT signals"
+        default=0.32,
+        help="Probability threshold for SHORT signals (Model 1 optimal from backtest)"
     )
     
     parser.add_argument(

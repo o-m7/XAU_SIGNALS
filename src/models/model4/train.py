@@ -240,4 +240,33 @@ def run_training_pipeline(
 
 
 if __name__ == "__main__":
-    run_training_pipeline()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Train Model 4 (Trend + Entry Timing)")
+
+    parser.add_argument(
+        "--data_path",
+        type=str,
+        required=True,
+        help="Path to 1-minute OHLCV parquet file"
+    )
+    parser.add_argument(
+        "--quotes_path",
+        type=str,
+        default=None,
+        help="Path to quotes parquet file (optional)"
+    )
+    parser.add_argument(
+        "--output_path",
+        type=str,
+        default="models/model4_lgbm.joblib",
+        help="Output path for trained model"
+    )
+
+    args = parser.parse_args()
+
+    run_training_pipeline(
+        data_path=args.data_path,
+        quotes_path=args.quotes_path,
+        output_path=args.output_path
+    )

@@ -44,18 +44,27 @@ class PolygonBackfill:
         
         Args:
             lookback_bars: Number of bars to fetch (max ~50,000)
-            end_time: End time (default: now)
+            end_time: End time (default: now - ensures recent data)
             
         Returns:
             DataFrame with columns: timestamp, open, high, low, close, volume, vwap, trades
         """
+        # Always use current time to ensure we get the most recent data
         if end_time is None:
             end_time = datetime.now(timezone.utc)
+        else:
+            # If end_time is provided but is old, use current time instead
+            now = datetime.now(timezone.utc)
+            if (now - end_time).total_seconds() > 3600:  # If more than 1 hour old
+                logger.warning(f"End time {end_time} is old, using current time {now} instead")
+                end_time = now
         
         # Calculate start time (add buffer for weekends/holidays)
         # Assume ~400 bars per trading day for forex
         days_needed = max(3, lookback_bars // 400 + 2)
         start_time = end_time - timedelta(days=days_needed)
+        
+        logger.info(f"Fetching recent bars: end_time={end_time}, start_time={start_time}")
         
         symbol = self.resolver.rest_aggs_symbol()
         

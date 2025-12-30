@@ -687,6 +687,18 @@ class FeatureBuffer:
         df["macd_zscore"] = (df["macd"] - macd_mean) / (macd_std + 1e-8)
         
         # Additional indicators for Model #3
+        # ATR (Model #3 expects 'atr', not 'ATR_14')
+        # Use ATR_14 if available, otherwise compute it
+        if "ATR_14" in df.columns:
+            df["atr"] = df["ATR_14"]
+        else:
+            # Compute ATR if not available
+            tr1 = df["high"] - df["low"]
+            tr2 = (df["high"] - df["close"].shift(1)).abs()
+            tr3 = (df["low"] - df["close"].shift(1)).abs()
+            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            df["atr"] = tr.rolling(14, min_periods=1).mean()
+        
         # RSI
         delta = df["close"].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14, min_periods=1).mean()
@@ -699,7 +711,7 @@ class FeatureBuffer:
         bb_std = df["close"].rolling(20, min_periods=1).std()
         df["bb_upper"] = df["bb_middle"] + (bb_std * 2)
         df["bb_lower"] = df["bb_middle"] - (bb_std * 2)
-        df["bb_width"] = (df["bb_upper"] - df["bb_lower"]) / df["bb_middle"]
+        df["bb_width"] = (df["bb_upper"] - df["bb_lower"]) / (df["bb_middle"] + 1e-8)
         df["bb_position"] = (df["close"] - df["bb_lower"]) / (df["bb_upper"] - df["bb_lower"] + 1e-8)
         
         # Volume ratio
@@ -713,15 +725,15 @@ class FeatureBuffer:
         # Moving averages
         df["sma_20"] = df["close"].rolling(20, min_periods=1).mean()
         df["sma_50"] = df["close"].rolling(50, min_periods=1).mean()
-        df["price_vs_sma20"] = (df["close"] - df["sma_20"]) / df["sma_20"]
-        df["price_vs_sma50"] = (df["close"] - df["sma_50"]) / df["sma_50"]
+        df["price_vs_sma20"] = (df["close"] - df["sma_20"]) / (df["sma_20"] + 1e-8)
+        df["price_vs_sma50"] = (df["close"] - df["sma_50"]) / (df["sma_50"] + 1e-8)
         
         # Fill NaNs for Model #3 features
         model3_cols = ['cmf', 'cmf_momentum', 'cmf_zscore', 'cmf_trend',
                       'macd', 'macd_signal', 'macd_histogram', 'macd_momentum',
                       'macd_signal_momentum', 'macd_above_signal', 'macd_cross_up',
                       'macd_cross_down', 'macd_hist_momentum', 'macd_zscore',
-                      'rsi', 'bb_middle', 'bb_upper', 'bb_lower', 'bb_width', 'bb_position',
+                      'rsi', 'atr', 'bb_middle', 'bb_upper', 'bb_lower', 'bb_width', 'bb_position',
                       'volume_ratio', 'price_momentum_5', 'price_momentum_20',
                       'price_vs_sma20', 'price_vs_sma50']
         for col in model3_cols:

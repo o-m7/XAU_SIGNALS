@@ -548,8 +548,17 @@ class FeatureBuffer:
         # =================================================================
         # Microstructure Features (simplified for minute bars)
         # =================================================================
-        # Note: Full microstructure features require tick-level quotes.
-        # These are approximations using minute bars.
+        # DATA LIMITATION WARNING:
+        # Our data includes OHLCV + top-of-book quotes (bid_price, ask_price).
+        # We do NOT have: trade-level data, order book depth, trade direction.
+        #
+        # The following features are APPROXIMATIONS based on tick rule:
+        # - synthetic_order_flow: price_direction * volume (NOT real order flow)
+        # - flow_cvd_60: cumulative synthetic flow (NOT real CVD)
+        # - flow_divergence: synthetic divergence
+        #
+        # These are legitimate for pattern detection but do NOT represent
+        # actual order flow or VPIN-style metrics.
         
         # micro_velocity: Approximate as tick count (use volume as proxy)
         df["micro_velocity"] = df["volume"].infer_objects(copy=False).fillna(0)

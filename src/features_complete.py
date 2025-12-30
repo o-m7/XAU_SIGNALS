@@ -624,7 +624,7 @@ def build_complete_features(
     horizons: list = [60],
     epsilon: float = 0.0005,
     tb_h_max: int = 60,
-    tb_tp_mult: float = 1.5,
+    tb_tp_mult: float = 1.0,  # Symmetric barriers (was 1.5 - created 60/40 bias)
     tb_sl_mult: float = 1.0,
     drop_na: bool = True
 ) -> pd.DataFrame:

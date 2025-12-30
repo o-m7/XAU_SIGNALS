@@ -1,6 +1,26 @@
 """
 Order Flow and Market Microstructure Features for Model #2
 
+DEPRECATION WARNING:
+====================
+Many features in this module (OFI, toxicity, depth_imbalance, etc.) require
+data that is NOT available in our current data feed:
+- bid_size, ask_size (order book depth) - NOT AVAILABLE
+- buy_volume, sell_volume (trade direction) - NOT AVAILABLE
+- trades count (number of trades) - NOT AVAILABLE
+
+Only features derivable from OHLCV + top-of-book quotes are legitimate:
+- ATR, volatility metrics
+- Price action (returns, ranges, positions)
+- Spread dynamics (from bid/ask prices)
+- Quote activity rates
+- Time/session features
+
+Features that fall back to approximations using OHLCV data are acceptable
+but should be interpreted with caution.
+
+Original module description:
+----------------------------
 This module implements advanced order flow indicators:
 - Order Flow Imbalance (OFI)
 - Order flow toxicity
@@ -8,6 +28,14 @@ This module implements advanced order flow indicators:
 - Tick pressure
 - Quote stability
 """
+
+import warnings
+warnings.warn(
+    "order_flow_features module contains features that require unavailable data. "
+    "Only OHLCV + quote-derived features are legitimate. See module docstring.",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 import pandas as pd
 import numpy as np

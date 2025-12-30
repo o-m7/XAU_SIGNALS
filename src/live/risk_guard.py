@@ -162,28 +162,22 @@ class RiskGuard:
                 cooldown_s=0,
             )
         
-        # Check cooldown from last signal
-        if self._last_signal_ts and cooldown_s > 0:
+        # Check time-based cooldown only (no direction-based blocking)
+        # Default cooldown: 900 seconds (15 minutes) between any signals
+        MIN_COOLDOWN_SECONDS = 900
+
+        if self._last_signal_ts:
             elapsed = (timestamp - self._last_signal_ts).total_seconds()
-            if elapsed < cooldown_s:
-                remaining = cooldown_s - elapsed
+            effective_cooldown = max(cooldown_s, MIN_COOLDOWN_SECONDS)
+            if elapsed < effective_cooldown:
+                remaining = effective_cooldown - elapsed
                 return RiskDecision(
                     allow=False,
                     reason=f"Cooldown: {remaining:.0f}s remaining",
-                    cooldown_s=cooldown_s,
+                    cooldown_s=effective_cooldown,
                 )
-        
-        # Check signal-change filtering
-        if self._last_signal is not None and signal == self._last_signal:
-            # Same signal as before - only allow if extreme confidence
-            if not self._is_extreme_confidence(prob_up):
-                return RiskDecision(
-                    allow=False,
-                    reason=f"Same signal ({signal}) - need extreme confidence to repeat",
-                    cooldown_s=cooldown_s,
-                )
-        
-        # Signal allowed
+
+        # Signal allowed - no direction-based blocking
         return RiskDecision(
             allow=True,
             reason="Signal allowed",

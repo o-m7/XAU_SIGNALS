@@ -27,7 +27,7 @@ def calculate_rsi(close: pd.Series, length: int = 14) -> pd.Series:
 def build_model4_features(
     df_1t: pd.DataFrame,
     df_quotes: Optional[pd.DataFrame] = None,
-    timeframe: str = "5T",
+    timeframe: str = "5min",
     session_hours: int = 8
 ) -> pd.DataFrame:
     """
@@ -40,7 +40,7 @@ def build_model4_features(
     df_quotes : pd.DataFrame, optional
         Quote data with bid_price, ask_price
     timeframe : str
-        Target timeframe for resampling (default "5T")
+        Target timeframe for resampling (default "5min")
     session_hours : int
         Rolling window for VWAP calculation (default 8)
 
@@ -71,7 +71,11 @@ def build_model4_features(
 
     # ===== SESSION POSITION FEATURES =====
     # Rolling session high/low
-    freq_minutes = 5 if timeframe == "5T" else int(timeframe.replace("T", ""))
+    # Parse timeframe to get minutes (handles both "5min" and legacy "5T" formats)
+    if timeframe in ["5min", "5T"]:
+        freq_minutes = 5
+    else:
+        freq_minutes = int(timeframe.replace("min", "").replace("T", ""))
     session_bars = int(session_hours * 60 / freq_minutes)
 
     df['session_high'] = df['high'].rolling(session_bars, min_periods=1).max()

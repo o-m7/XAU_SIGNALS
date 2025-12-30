@@ -13,13 +13,13 @@ class Model4Config:
     """Configuration for VWAP Mean Reversion Model."""
 
     # Timeframe
-    base_timeframe: str = "5T"
+    base_timeframe: str = "5min"
 
     # VWAP parameters
     vwap_session_hours: int = 8  # Rolling window for VWAP
 
     # Setup detection
-    entry_zscore_threshold: float = 2.0  # Distance from VWAP in ATR units
+    entry_zscore_threshold: float = 1.0  # Distance from VWAP in ATR units (lowered from 2.0)
 
     # Regime filter
     max_adx: float = 25.0  # Only trade when ADX below this

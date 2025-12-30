@@ -102,7 +102,28 @@ def prepare_training_data(
             f"Found columns: {list(df_raw.columns)[:10]}..."
         )
 
-    print("Creating reversion labels...")
+    # Diagnostic: show z-score distribution before labeling
+    if 'vwap_zscore' in df.columns:
+        zscore = df['vwap_zscore'].dropna()
+        print(f"\nVWAP Z-Score Distribution:")
+        print(f"  Count: {len(zscore):,}")
+        print(f"  Mean: {zscore.mean():.3f}")
+        print(f"  Std: {zscore.std():.3f}")
+        print(f"  Min/Max: {zscore.min():.3f} / {zscore.max():.3f}")
+        print(f"  Percentiles (5/25/50/75/95): "
+              f"{zscore.quantile(0.05):.2f} / {zscore.quantile(0.25):.2f} / "
+              f"{zscore.quantile(0.50):.2f} / {zscore.quantile(0.75):.2f} / "
+              f"{zscore.quantile(0.95):.2f}")
+
+        # Count potential setups at different thresholds
+        for thresh in [0.5, 1.0, 1.5, 2.0]:
+            n_setups = (zscore.abs() >= thresh).sum()
+            pct = n_setups / len(zscore) * 100
+            print(f"  Bars with |z| >= {thresh}: {n_setups:,} ({pct:.1f}%)")
+    else:
+        print("\n[WARN] vwap_zscore column not found!")
+
+    print(f"\nCreating reversion labels (threshold={config.entry_zscore_threshold})...")
     df = add_reversion_labels(
         df,
         zscore_threshold=config.entry_zscore_threshold,
@@ -191,7 +212,7 @@ def build_model4_features_from_5t(
 
     # Spread features (placeholder if no quotes)
     if df_quotes is not None and len(df_quotes) > 0:
-        quotes_resampled = df_quotes.resample('5T').agg({
+        quotes_resampled = df_quotes.resample('5min').agg({
             'ask_price': 'mean',
             'bid_price': 'mean',
         })
@@ -202,7 +223,7 @@ def build_model4_features_from_5t(
             (quotes_resampled['spread_pct'] - quotes_resampled['spread_pct'].rolling(60).mean()) /
             quotes_resampled['spread_pct'].rolling(60).std().replace(0, np.nan)
         )
-        quote_counts = df_quotes.resample('5T').size()
+        quote_counts = df_quotes.resample('5min').size()
         quotes_resampled['quote_rate'] = quote_counts
         quotes_resampled['quote_rate_zscore'] = (
             (quotes_resampled['quote_rate'] - quotes_resampled['quote_rate'].rolling(60).mean()) /

@@ -169,13 +169,14 @@ class FeatureBuffer:
         # Use the most recent bid/ask from quotes (within the same minute)
         bid_price = None
         ask_price = None
-        if hasattr(self, '_last_quote_bid') and hasattr(self, '_last_quote_ask'):
+        if (self._last_quote_bid is not None and 
+            self._last_quote_ask is not None and 
+            self._last_quote_time is not None):
             # Use last quote bid/ask if within same minute
-            if hasattr(self, '_last_quote_time'):
-                quote_time_minute = self._last_quote_time.replace(second=0, microsecond=0)
-                if quote_time_minute == timestamp_minute:
-                    bid_price = self._last_quote_bid
-                    ask_price = self._last_quote_ask
+            quote_time_minute = self._last_quote_time.replace(second=0, microsecond=0)
+            if quote_time_minute == timestamp_minute:
+                bid_price = self._last_quote_bid
+                ask_price = self._last_quote_ask
         
         # Direct bar insertion with merged bid/ask from quotes
         bar = {

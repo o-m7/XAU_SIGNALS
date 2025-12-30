@@ -473,5 +473,67 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    parser = argparse.ArgumentParser(description="Backtest y_tb_60 model")
+    parser.add_argument("--threshold_long", type=float, default=None, help="Long threshold (overrides search)")
+    parser.add_argument("--threshold_short", type=float, default=None, help="Short threshold (overrides search)")
+    args = parser.parse_args()
+    
+    if args.threshold_long is not None and args.threshold_short is not None:
+        # Run with specific thresholds
+        print("=" * 70)
+        print(f"BACKTEST with specific thresholds: tl={args.threshold_long}, ts={args.threshold_short}")
+        print("=" * 70)
+        
+        # Load model and data
+        artifact = load_model_artifact()
+        model = artifact["model"]
+        features = artifact["features"]
+        df = load_features_data()
+        
+        # Prepare data
+        cols_to_check = features + [TARGET]
+        df_clean = df.dropna(subset=cols_to_check)
+        df_clean = df_clean[df_clean[TARGET] != 0]
+        
+        # Time-based split
+        train_idx, val_idx, test_idx = make_time_splits(len(df_clean))
+        
+        # Test set only
+        df_test = df_clean.iloc[test_idx]
+        X_test = df_test[features].to_numpy()
+        y_test = df_test[TARGET].to_numpy()
+        close_test = df_test["close"].to_numpy()
+        
+        # Get predictions
+        proba_test = model.predict_proba(X_test)[:, 1]
+        
+        # Run backtest
+        result = run_backtest(y_test, proba_test, close_test, args.threshold_long, args.threshold_short)
+        
+        print(f"\n{'='*70}")
+        print("BACKTEST RESULTS")
+        print(f"{'='*70}")
+        print(f"\n  Thresholds:")
+        print(f"    Long:  {args.threshold_long:.2f}")
+        print(f"    Short: {args.threshold_short:.2f}")
+        print(f"\n  Results:")
+        print(f"    Trades:      {result.n_trades:,}")
+        print(f"    Win Rate:    {result.win_rate*100:.1f}%")
+        print(f"    Avg R/trade: {result.avg_ret_per_trade:+.4f}")
+        print(f"    Cumulative:  {result.cum_ret:+.1f} R")
+        print(f"    Sharpe:      {result.sharpe:.2f}")
+        
+        # Count long vs short trades
+        signal = np.zeros_like(proba_test, dtype=int)
+        signal[proba_test >= args.threshold_long] = 1
+        signal[proba_test <= args.threshold_short] = -1
+        trade_mask = signal != 0
+        long_trades = int((signal[trade_mask] == 1).sum())
+        short_trades = int((signal[trade_mask] == -1).sum())
+        print(f"\n  Trade Breakdown:")
+        print(f"    Long trades:  {long_trades:,}")
+        print(f"    Short trades: {short_trades:,}")
+    else:
+        main()
 

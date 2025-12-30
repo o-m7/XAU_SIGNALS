@@ -50,6 +50,7 @@ def build_model4_features(
     """
 
     # Resample to target timeframe
+    print(f"  Resampling {len(df_1t):,} rows to {timeframe}...")
     df = df_1t.resample(timeframe).agg({
         'open': 'first',
         'high': 'max',
@@ -57,6 +58,7 @@ def build_model4_features(
         'close': 'last',
         'volume': 'sum'
     }).dropna()
+    print(f"  After resample: {len(df):,} rows")
 
     # ===== ATR FIRST (needed for z-score) =====
     df = calculate_atr(df, period=14)
@@ -164,7 +166,17 @@ def build_model4_features(
     df['is_overlap'] = ((df['hour'] >= 13) & (df['hour'] < 16)).astype(int)
 
     # ===== CLEANUP =====
-    df = df.replace([np.inf, -np.inf], np.nan).ffill().dropna()
+    before_clean = len(df)
+    df = df.replace([np.inf, -np.inf], np.nan)
+    n_inf = before_clean - df.dropna().shape[0] if df.isna().any().any() else 0
+    df = df.ffill().dropna()
+    print(f"  After cleanup: {len(df):,} rows (removed {before_clean - len(df):,} with inf/nan)")
+
+    # Show z-score stats after building
+    if 'vwap_zscore' in df.columns and len(df) > 0:
+        z = df['vwap_zscore']
+        print(f"  Z-score stats: mean={z.mean():.2f}, std={z.std():.2f}, "
+              f"min={z.min():.2f}, max={z.max():.2f}")
 
     return df
 

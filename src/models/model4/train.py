@@ -79,12 +79,13 @@ def prepare_training_data(
     # Build features based on input type
     if is_1t and has_ohlcv:
         # Raw 1T data - full feature build with resampling
-        print("Building features from 1T OHLCV data...")
+        print(f"Building features from 1T OHLCV data (resampling to {config.base_timeframe})...")
         df = build_model4_features(
             df_raw, df_quotes,
             config.base_timeframe,
             config.vwap_session_hours
         )
+        print(f"  After feature build: {len(df):,} rows")
     elif has_ohlcv and not has_vwap:
         # 5T OHLCV data - build VWAP features directly (no resampling)
         print("Building VWAP features from 5T OHLCV data...")
@@ -298,15 +299,42 @@ def get_training_set(
     config = config or Model4Config()
     feature_cols = get_model4_feature_columns()
 
-    mask = (
-        df['y_reversion'].notna() &
-        (df['regime_tradeable'] == 1) &
-        ((df['is_london'] == 1) | (df['is_ny'] == 1))
-    )
+    # Show filter breakdown
+    print(f"\n=== FILTER BREAKDOWN ===")
+    print(f"Total rows: {len(df):,}")
 
+    has_setup = df['y_reversion'].notna()
+    print(f"Has setup (y_reversion not NaN): {has_setup.sum():,} ({has_setup.mean()*100:.1f}%)")
+
+    if 'regime_tradeable' in df.columns:
+        regime_ok = df['regime_tradeable'] == 1
+        print(f"Regime tradeable: {regime_ok.sum():,} ({regime_ok.mean()*100:.1f}%)")
+    else:
+        regime_ok = pd.Series(True, index=df.index)
+        print("Regime tradeable: N/A (column missing, using all)")
+
+    if 'is_london' in df.columns and 'is_ny' in df.columns:
+        session_ok = (df['is_london'] == 1) | (df['is_ny'] == 1)
+        print(f"London/NY session: {session_ok.sum():,} ({session_ok.mean()*100:.1f}%)")
+    else:
+        session_ok = pd.Series(True, index=df.index)
+        print("London/NY session: N/A (columns missing, using all)")
+
+    mask = has_setup & regime_ok & session_ok
     df_filtered = df[mask].copy()
 
-    print(f"\nTraining samples: {len(df_filtered):,} (from {len(df):,} total)")
+    print(f"\nAfter all filters: {len(df_filtered):,} samples")
+
+    if len(df_filtered) == 0:
+        print("\n[ERROR] No training samples! Check:")
+        print("  - Are setups being created? (y_reversion)")
+        print("  - Is regime too strict? (regime_tradeable)")
+        print("  - Are session hours correct? (is_london/is_ny)")
+        # Return empty but valid dataframes to avoid crash
+        X = pd.DataFrame(columns=feature_cols)
+        y = pd.Series(dtype=float)
+        return X, y
+
     print(f"Filtered win rate: {df_filtered['y_reversion'].mean():.1%}")
 
     X = df_filtered[feature_cols]
@@ -403,6 +431,17 @@ def run_training_pipeline(
 
     df = prepare_training_data(data_path, quotes_path, config)
     X, y = get_training_set(df, config)
+
+    # Check for empty training set
+    if len(X) == 0:
+        print("\n" + "="*60)
+        print("TRAINING ABORTED: No training samples found!")
+        print("="*60)
+        print("\nPossible fixes:")
+        print("  1. Lower entry_zscore_threshold in config.py (currently 1.0)")
+        print("  2. Check regime_tradeable filter (ADX threshold)")
+        print("  3. Verify data has London/NY session hours")
+        return
 
     # Validate base win rate
     base_wr = y.mean()

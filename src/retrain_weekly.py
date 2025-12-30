@@ -538,8 +538,8 @@ def run_retraining(dry_run: bool = False, force: bool = False) -> bool:
     logger.info("\n--- Step 2: Build Features ---")
     try:
         features_df = build_complete_features(
-            bars_df=bars,
-            quotes_df=quotes,
+            bars=bars,
+            quotes=quotes,
             tb_h_max=60,
             tb_tp_mult=1.0,
             tb_sl_mult=1.0

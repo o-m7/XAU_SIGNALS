@@ -198,10 +198,9 @@ class SignalEngine:
             # Reject trades when volatility is too low (spread kills you) or
             # spread is too high (cost kills you)
             # =====================================================================
-            if not self._check_volatility_filter(feature_row):
-                logger.warning(
-                    f"⚠️ FILTERED: Volatility filter failed. Market conditions not suitable."
-                )
+            volatility_filter_passed = self._check_volatility_filter(feature_row)
+            if not volatility_filter_passed:
+                # Detailed error message already logged in _check_volatility_filter
                 signal = Signal.FLAT
                 conviction = 0.0
             
@@ -234,29 +233,70 @@ class SignalEngine:
         Returns True if volatility is good for a High-WR trade.
         """
         try:
-            required_cols = ['ATR_14', 'spread']
+            # Use spread_pct (percentage) instead of absolute spread for better compatibility
+            # Also check ATR_14 for volatility
+            required_cols = ['ATR_14', 'spread_pct']
             if not all(col in feature_row.columns for col in required_cols):
-                # If we don't have the features, allow the trade (fail open)
-                return True
+                # Fallback to absolute spread if spread_pct not available
+                if 'spread' in feature_row.columns and 'ATR_14' in feature_row.columns:
+                    required_cols = ['ATR_14', 'spread']
+                else:
+                    logger.warning(f"Volatility filter: Missing required columns {required_cols}, allowing trade")
+                    return True
             
             current_bar = feature_row.iloc[0]
+            atr_value = current_bar['ATR_14']
+            
+            # Use spread_pct if available, otherwise use absolute spread
+            if 'spread_pct' in feature_row.columns:
+                spread_value = current_bar['spread_pct']
+                use_percentage = True
+            else:
+                spread_value = current_bar['spread']
+                use_percentage = False
             
             # 1. Check ATR (Is there enough juice to cover spread?)
-            min_atr = 0.50  # Minimum 50 cents move expected
-            if current_bar['ATR_14'] < min_atr:
-                logger.debug(f"Volatility filter: ATR too low ({current_bar['ATR_14']:.2f} < {min_atr})")
+            # For gold, ATR of 0.30-0.50 is reasonable for intraday trading
+            min_atr = 0.30  # Minimum 30 cents move expected (relaxed from 0.50)
+            if atr_value < min_atr:
+                logger.warning(
+                    f"⚠️ Volatility filter FAILED: ATR too low. "
+                    f"ATR_14={atr_value:.2f} < min_atr={min_atr} "
+                    f"(Market volatility too low for profitable trading)"
+                )
                 return False  # Market is dead, don't trade
             
             # 2. Check Spread (Is cost too high?)
-            max_spread = 0.20  # Max 20 cents spread
-            if current_bar['spread'] > max_spread:
-                logger.debug(f"Volatility filter: Spread too high ({current_bar['spread']:.2f} > {max_spread})")
-                return False  # Too expensive
+            if use_percentage:
+                # Use percentage-based spread (aligns with config.py: max_spread_pct = 0.001)
+                max_spread_pct = 0.001  # Max 0.1% spread (matches config.py)
+                if spread_value > max_spread_pct:
+                    logger.warning(
+                        f"⚠️ Volatility filter FAILED: Spread too high. "
+                        f"spread_pct={spread_value:.6f} ({spread_value*100:.4f}%) > max_spread_pct={max_spread_pct} ({max_spread_pct*100:.4f}%) "
+                        f"(Trading costs too high for profitable trading)"
+                    )
+                    return False  # Too expensive
+            else:
+                # Fallback: absolute spread (for gold, typical spreads are $0.50-$2.00)
+                max_spread = 2.00  # Max $2.00 spread (relaxed from 0.20)
+                if spread_value > max_spread:
+                    logger.warning(
+                        f"⚠️ Volatility filter FAILED: Spread too high. "
+                        f"spread={spread_value:.2f} > max_spread={max_spread} "
+                        f"(Trading costs too high for profitable trading)"
+                    )
+                    return False  # Too expensive
             
+            # Both checks passed
+            logger.debug(
+                f"✓ Volatility filter PASSED: ATR_14={atr_value:.2f} >= {min_atr}, "
+                f"spread={spread_value:.2f} <= {max_spread}"
+            )
             return True
             
         except Exception as e:
-            logger.debug(f"Volatility filter check failed (non-critical): {e}")
+            logger.warning(f"Volatility filter check failed (non-critical): {e}")
             # Default to allowing trade if check fails
             return True
     

@@ -102,6 +102,9 @@ class FeatureBuffer:
         """
         Update buffer from a quote event.
         
+        Quotes provide bid/ask for microstructure features.
+        We store the latest bid/ask to merge into bars from aggregates.
+        
         Args:
             event: Dict with type="quote", timestamp, bid, ask, mid
             
@@ -114,14 +117,25 @@ class FeatureBuffer:
         elif timestamp.tzinfo is None:
             timestamp = timestamp.replace(tzinfo=timezone.utc)
         
-        mid = event.get("mid") or ((event.get("bid", 0) + event.get("ask", 0)) / 2)
+        # Store latest bid/ask for merging into aggregate bars
+        bid = event.get("bid")
+        ask = event.get("ask")
+        if bid is not None and ask is not None:
+            self._last_quote_bid = bid
+            self._last_quote_ask = ask
+            self._last_quote_time = timestamp
         
-        # Synthetic tick from quote
+        mid = event.get("mid") or ((bid or 0) + (ask or 0)) / 2 if (bid and ask) else None
+        
+        if mid is None:
+            return None  # Skip invalid quotes
+        
+        # Synthetic tick from quote (for bar aggregation)
         tick = {
             "timestamp": timestamp,
             "price": mid,
-            "bid": event.get("bid"),
-            "ask": event.get("ask"),
+            "bid": bid,
+            "ask": ask,
             "volume": 0,  # Quotes don't have volume
         }
         
@@ -143,7 +157,22 @@ class FeatureBuffer:
         elif timestamp.tzinfo is None:
             timestamp = timestamp.replace(tzinfo=timezone.utc)
         
-        # Direct bar insertion
+        # Round timestamp to minute for bar matching
+        timestamp_minute = timestamp.replace(second=0, microsecond=0)
+        
+        # Check if we have a recent quote with bid/ask for this minute
+        # Use the most recent bid/ask from quotes (within the same minute)
+        bid_price = None
+        ask_price = None
+        if hasattr(self, '_last_quote_bid') and hasattr(self, '_last_quote_ask'):
+            # Use last quote bid/ask if within same minute
+            if hasattr(self, '_last_quote_time'):
+                quote_time_minute = self._last_quote_time.replace(second=0, microsecond=0)
+                if quote_time_minute == timestamp_minute:
+                    bid_price = self._last_quote_bid
+                    ask_price = self._last_quote_ask
+        
+        # Direct bar insertion with merged bid/ask from quotes
         bar = {
             "timestamp": timestamp,
             "open": event["open"],
@@ -151,8 +180,8 @@ class FeatureBuffer:
             "low": event["low"],
             "close": event["close"],
             "volume": event.get("volume", 0),
-            "bid_price": None,  # Not available from agg stream
-            "ask_price": None,
+            "bid_price": bid_price,  # Merged from quotes if available
+            "ask_price": ask_price,  # Merged from quotes if available
             "n_ticks": 1,
         }
         

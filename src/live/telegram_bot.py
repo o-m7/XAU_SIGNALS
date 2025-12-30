@@ -63,7 +63,7 @@ class TelegramBot:
     ) -> bool:
         """
         Send a trading signal to Telegram.
-        
+
         Args:
             signal: Signal type (LONG, SHORT, FLAT)
             proba_up: Probability of up move
@@ -74,12 +74,12 @@ class TelegramBot:
             risk_pct: Risk per trade
             model_name: Model identifier
             extra_info: Additional info to include
-            
+
         Returns:
             True if sent successfully
         """
         if not self.enabled:
-            logger.debug("Telegram disabled, skipping send")
+            logger.warning(f"Telegram disabled - signal {signal} NOT sent (token={bool(self.token)}, chat_id={bool(self.chat_id)})")
             return False
         
         if timestamp is None:

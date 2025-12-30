@@ -572,7 +572,7 @@ class LiveRunner:
                     extra_info["⚠️ Conviction"] = f"{conviction:.0%} (Reduced Risk)"
 
                 # Send Telegram notification with TP/SL and model name
-                self.telegram_bot.send_signal(
+                telegram_sent = self.telegram_bot.send_signal(
                     signal=signal,
                     proba_up=proba_up,
                     timestamp=timestamp,
@@ -584,7 +584,10 @@ class LiveRunner:
                     extra_info=extra_info
                 )
 
-                logger.info(f"🔔 SIGNAL SENT [{model_display}]: {signal} @ {self._current_price:.2f} | TP={tp_str} | SL={sl_str}")
+                if telegram_sent:
+                    logger.info(f"🔔 SIGNAL SENT [{model_display}]: {signal} @ {self._current_price:.2f} | TP={tp_str} | SL={sl_str}")
+                else:
+                    logger.warning(f"⚠️ SIGNAL GENERATED but Telegram FAILED [{model_display}]: {signal} @ {self._current_price:.2f}")
             else:
                 logger.debug(f"[{model_display}] Signal blocked: {decision.reason}")
 
@@ -642,7 +645,7 @@ class LiveRunner:
         }
 
         # Send Telegram notification
-        self.telegram_bot.send_signal(
+        telegram_sent = self.telegram_bot.send_signal(
             signal=signal,
             proba_up=confidence if signal == "LONG" else 1 - confidence,
             timestamp=timestamp,
@@ -654,7 +657,10 @@ class LiveRunner:
             extra_info=extra_info
         )
 
-        logger.info(f"🔔 SIGNAL SENT [Model4]: {signal} @ {self._current_price:.2f} | TP={tp_str} | SL={sl_str}")
+        if telegram_sent:
+            logger.info(f"🔔 SIGNAL SENT [Model4]: {signal} @ {self._current_price:.2f} | TP={tp_str} | SL={sl_str}")
+        else:
+            logger.warning(f"⚠️ SIGNAL GENERATED but Telegram FAILED [Model4]: {signal} @ {self._current_price:.2f}")
     
     def get_status(self) -> dict:
         """Get current runner status."""

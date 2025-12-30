@@ -49,6 +49,14 @@ FEATURE_NAMES = [
     'minute_sin', 'minute_cos', 'day_of_week',
     'is_asia', 'is_europe', 'is_us',
     'adx', 'adx_slope', 'efficiency_ratio', 'atr_percentile',
+    # Model #3 features (CMF/MACD)
+    'cmf', 'cmf_momentum', 'cmf_zscore', 'cmf_trend',
+    'macd', 'macd_signal', 'macd_histogram', 'macd_momentum',
+    'macd_signal_momentum', 'macd_above_signal', 'macd_cross_up',
+    'macd_cross_down', 'macd_hist_momentum', 'macd_zscore',
+    'rsi', 'atr', 'bb_middle', 'bb_upper', 'bb_lower', 'bb_width', 'bb_position',
+    'volume_ratio', 'price_momentum_5', 'price_momentum_20',
+    'price_vs_sma20', 'price_vs_sma50',
     'regime_trending', 'regime_ranging', 'regime_volatile',
     'wick_flow_interaction', 'body_flow_interaction', 'wick_volume_interaction',
 ]
@@ -739,7 +747,9 @@ class FeatureBuffer:
         for col in model3_cols:
             if col in df.columns:
                 df[col] = df[col].fillna(0).infer_objects(copy=False)
-        df["atr_percentile"] = df["ATR_14"].rolling(atr_lookback, min_periods=10).apply(
+        # ATR percentile (use ATR_14 if available, otherwise use atr)
+        atr_col = "ATR_14" if "ATR_14" in df.columns else "atr"
+        df["atr_percentile"] = df[atr_col].rolling(atr_lookback, min_periods=10).apply(
             lambda x: pd.Series(x).rank(pct=True).iloc[-1] if len(x) > 0 else 0.5,
             raw=False
         ).infer_objects(copy=False).fillna(0.5)

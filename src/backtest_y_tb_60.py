@@ -38,12 +38,12 @@ TEST_RATIO = 0.15
 # Target label
 TARGET = "y_tb_60"
 
-# Threshold search grid
-LONG_THRESHOLDS = np.arange(0.55, 0.80, 0.05)
-SHORT_THRESHOLDS = np.arange(0.20, 0.46, 0.05)
+# Threshold search grid - balanced range for both long and short
+LONG_THRESHOLDS = np.arange(0.52, 0.76, 0.02)   # 0.52 to 0.74
+SHORT_THRESHOLDS = np.arange(0.26, 0.50, 0.02)  # 0.26 to 0.48
 
 # Minimum trades for a valid config
-MIN_TRADES = 200
+MIN_TRADES = 100  # Lower to see more combinations
 
 
 # =============================================================================
@@ -56,6 +56,8 @@ class BacktestResult:
     threshold_long: float
     threshold_short: float
     n_trades: int
+    n_longs: int
+    n_shorts: int
     win_rate: float
     avg_ret_per_trade: float
     cum_ret: float
@@ -176,16 +178,22 @@ def run_backtest(
     signal = np.zeros_like(proba_up, dtype=int)
     signal[proba_up >= threshold_long] = 1    # Long signal
     signal[proba_up <= threshold_short] = -1  # Short signal
-    
+
+    # Count longs and shorts
+    n_longs = int((signal == 1).sum())
+    n_shorts = int((signal == -1).sum())
+
     # Filter to entries where signal != 0
     trade_mask = signal != 0
     n_trades = int(trade_mask.sum())
-    
+
     if n_trades == 0:
         return BacktestResult(
             threshold_long=threshold_long,
             threshold_short=threshold_short,
             n_trades=0,
+            n_longs=0,
+            n_shorts=0,
             win_rate=np.nan,
             avg_ret_per_trade=0.0,
             cum_ret=0.0,
@@ -216,6 +224,8 @@ def run_backtest(
         threshold_long=threshold_long,
         threshold_short=threshold_short,
         n_trades=n_trades,
+        n_longs=n_longs,
+        n_shorts=n_shorts,
         win_rate=win_rate,
         avg_ret_per_trade=avg_ret,
         cum_ret=cum_ret,
@@ -280,62 +290,67 @@ def search_thresholds(
 
 def print_results_table(results: List[BacktestResult], title: str, top_n: int = 10) -> None:
     """Print a table of backtest results."""
-    print(f"\n{'='*70}")
+    print(f"\n{'='*80}")
     print(title)
-    print(f"{'='*70}")
-    
+    print(f"{'='*80}")
+
     if not results:
         print("  No valid configurations found.")
         return
-    
-    print(f"\n  {'Idx':>3}  {'tl':>5}  {'ts':>5}  {'trades':>7}  {'win%':>6}  {'avg_R':>7}  {'cum_R':>8}  {'sharpe':>7}")
-    print(f"  {'-'*60}")
-    
+
+    print(f"\n  {'Idx':>3}  {'tl':>5}  {'ts':>5}  {'trades':>7}  {'L/S':>10}  {'win%':>6}  {'avg_R':>7}  {'cum_R':>8}  {'sharpe':>7}")
+    print(f"  {'-'*75}")
+
     for i, r in enumerate(results[:top_n]):
         marker = " *" if i == 0 else ""
+        ls_ratio = f"{r.n_longs}/{r.n_shorts}"
         print(f"  {i+1:>3}  {r.threshold_long:>5.2f}  {r.threshold_short:>5.2f}  "
-              f"{r.n_trades:>7,}  {r.win_rate*100:>5.1f}%  {r.avg_ret_per_trade:>+7.4f}  "
+              f"{r.n_trades:>7,}  {ls_ratio:>10}  {r.win_rate*100:>5.1f}%  {r.avg_ret_per_trade:>+7.4f}  "
               f"{r.cum_ret:>+8.1f}  {r.sharpe:>7.2f}{marker}")
-    
+
     if len(results) > top_n:
         print(f"  ... and {len(results) - top_n} more configurations")
 
 
 def print_final_summary(val_result: BacktestResult, test_result: BacktestResult) -> None:
     """Print final backtest summary."""
-    print(f"\n{'='*70}")
+    print(f"\n{'='*80}")
     print("FINAL BACKTEST RESULTS (y_tb_60, tuned model)")
-    print(f"{'='*70}")
-    
+    print(f"{'='*80}")
+
     print(f"\n  Chosen thresholds:")
     print(f"    Long  (go long if proba >= tl):  {val_result.threshold_long:.2f}")
     print(f"    Short (go short if proba <= ts): {val_result.threshold_short:.2f}")
-    
+
     print(f"\n  Validation Set:")
-    print(f"    Trades:      {val_result.n_trades:,}")
+    print(f"    Trades:      {val_result.n_trades:,} (Longs: {val_result.n_longs}, Shorts: {val_result.n_shorts})")
+    val_long_pct = val_result.n_longs / val_result.n_trades * 100 if val_result.n_trades > 0 else 0
+    print(f"    L/S Balance: {val_long_pct:.1f}% / {100-val_long_pct:.1f}%")
     print(f"    Win Rate:    {val_result.win_rate*100:.1f}%")
     print(f"    Avg R/trade: {val_result.avg_ret_per_trade:+.4f}")
     print(f"    Cumulative:  {val_result.cum_ret:+.1f} R")
     print(f"    Sharpe:      {val_result.sharpe:.2f}")
-    
+
     print(f"\n  Test Set:")
-    print(f"    Trades:      {test_result.n_trades:,}")
+    print(f"    Trades:      {test_result.n_trades:,} (Longs: {test_result.n_longs}, Shorts: {test_result.n_shorts})")
+    test_long_pct = test_result.n_longs / test_result.n_trades * 100 if test_result.n_trades > 0 else 0
+    print(f"    L/S Balance: {test_long_pct:.1f}% / {100-test_long_pct:.1f}%")
     print(f"    Win Rate:    {test_result.win_rate*100:.1f}%")
     print(f"    Avg R/trade: {test_result.avg_ret_per_trade:+.4f}")
     print(f"    Cumulative:  {test_result.cum_ret:+.1f} R")
     print(f"    Sharpe:      {test_result.sharpe:.2f}")
-    
+
     # Comparison
-    print(f"\n  Val→Test Comparison:")
+    print(f"\n  Val->Test Comparison:")
     wr_diff = (test_result.win_rate - val_result.win_rate) * 100
     sharpe_diff = test_result.sharpe - val_result.sharpe
     print(f"    Win Rate change:  {wr_diff:+.1f}pp")
     print(f"    Sharpe change:    {sharpe_diff:+.2f}")
-    
+
     if test_result.sharpe > 0:
-        print(f"\n  ✓ Test Sharpe is positive ({test_result.sharpe:.2f})")
+        print(f"\n  [OK] Test Sharpe is positive ({test_result.sharpe:.2f})")
     else:
-        print(f"\n  ⚠ Test Sharpe is not positive ({test_result.sharpe:.2f})")
+        print(f"\n  [WARN] Test Sharpe is not positive ({test_result.sharpe:.2f})")
 
 
 # =============================================================================
@@ -408,10 +423,26 @@ def main():
     print(f"\nGenerating predictions...")
     proba_val = model.predict_proba(X_val)[:, 1]   # Probability of up (class 1)
     proba_test = model.predict_proba(X_test)[:, 1]
-    
-    print(f"  Val proba range: [{proba_val.min():.3f}, {proba_val.max():.3f}]")
-    print(f"  Test proba range: [{proba_test.min():.3f}, {proba_test.max():.3f}]")
-    
+
+    # Probability distribution analysis
+    print(f"\n{'='*80}")
+    print("PROBABILITY DISTRIBUTION ANALYSIS (Test Set)")
+    print(f"{'='*80}")
+    print(f"  Min: {proba_test.min():.4f}")
+    print(f"  Max: {proba_test.max():.4f}")
+    print(f"  Mean: {proba_test.mean():.4f}")
+    print(f"  Median: {np.median(proba_test):.4f}")
+    print(f"  Std: {proba_test.std():.4f}")
+
+    # Distribution buckets
+    print(f"\n  Probability Distribution:")
+    buckets = [(0.0, 0.3), (0.3, 0.4), (0.4, 0.5), (0.5, 0.6), (0.6, 0.7), (0.7, 1.0)]
+    for low, high in buckets:
+        count = ((proba_test >= low) & (proba_test < high)).sum()
+        pct = count / len(proba_test) * 100
+        bar = "#" * int(pct / 2)
+        print(f"    {low:.1f}-{high:.1f}: {count:>6,} ({pct:>5.1f}%) {bar}")
+
     # Threshold grid search on validation set
     print(f"\nSearching thresholds on validation set...")
     print(f"  Long thresholds: {LONG_THRESHOLDS}")

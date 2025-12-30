@@ -148,7 +148,8 @@ class Model4SignalEngine:
 
         # ===== 5. MODEL PREDICTION =====
         try:
-            X = features[self.feature_columns].values.reshape(1, -1)
+            # Keep as DataFrame to preserve feature names
+            X = pd.DataFrame([features[self.feature_columns].values], columns=self.feature_columns)
             prob_good_entry = self.model.predict_proba(X)[0, 1]
         except Exception as e:
             return SignalResult(

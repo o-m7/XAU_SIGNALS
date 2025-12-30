@@ -198,8 +198,9 @@ def backfill_feature_buffer(
     
     backfill = PolygonBackfill(api_key, resolver)
     
-    # Fetch bars
-    bars_df = backfill.fetch_minute_bars(lookback_bars=lookback_bars)
+    # Fetch bars with explicit recent end_time (ensures we get latest data)
+    end_time = datetime.now(timezone.utc)
+    bars_df = backfill.fetch_minute_bars(lookback_bars=lookback_bars, end_time=end_time)
     
     if bars_df.empty:
         logger.error("Failed to fetch historical bars")

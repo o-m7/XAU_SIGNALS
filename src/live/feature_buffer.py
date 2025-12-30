@@ -325,10 +325,29 @@ class FeatureBuffer:
         latest = features.iloc[[-1]].copy()
         
         # Ensure all required features exist
+        missing_features = []
         for feat in FEATURE_NAMES:
             if feat not in latest.columns:
                 latest[feat] = np.nan
-                logger.warning(f"Missing feature: {feat}")
+                missing_features.append(feat)
+        
+        if missing_features:
+            logger.warning(f"⚠️ Missing {len(missing_features)} features: {missing_features[:10]}")
+        
+        # Check for NaN values
+        nan_count = latest[FEATURE_NAMES].isna().sum().sum()
+        if nan_count > 0:
+            nan_features = latest[FEATURE_NAMES].isna().sum()
+            nan_features = nan_features[nan_features > 0].index.tolist()
+            logger.warning(f"⚠️ {nan_count} NaN values in features: {nan_features[:10]}")
+            # Fill NaN with 0 (better than leaving as NaN)
+            latest[FEATURE_NAMES] = latest[FEATURE_NAMES].fillna(0)
+        
+        # Check for constant/zero features (data flow issue)
+        feature_std = latest[FEATURE_NAMES].std()
+        constant_features = feature_std[feature_std < 1e-6].index.tolist()
+        if constant_features and len(self._bars) > 10:
+            logger.debug(f"Constant features (possible data issue): {constant_features[:5]}")
         
         # Select only required features in correct order
         return latest[FEATURE_NAMES]

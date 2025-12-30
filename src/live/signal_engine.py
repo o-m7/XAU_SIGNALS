@@ -107,8 +107,20 @@ class SignalEngine:
                 for i in range(len(self.features)) 
                 if np.isnan(X[0, i])
             ]
-            logger.warning(f"NaN in features: {nan_cols[:5]}")
-            return self._make_result(Signal.FLAT, 0.5, timestamp, None, None, None, "NaN features")
+            logger.warning(f"⚠️ NaN in {len(nan_cols)} features: {nan_cols[:10]}")
+            # Fill NaN with 0 for now (better than returning FLAT)
+            X = np.nan_to_num(X, nan=0.0)
+        
+        # Check for constant features (all same value) - indicates data flow issue
+        if len(X.shape) > 1 and X.shape[0] > 0:
+            feature_std = np.std(X, axis=0)
+            constant_features = [
+                self.features[i] 
+                for i in range(len(self.features)) 
+                if feature_std[i] < 1e-6 and i < len(feature_std)
+            ]
+            if constant_features:
+                logger.debug(f"Constant features (likely data issue): {constant_features[:5]}")
         
         # Get prediction
         try:

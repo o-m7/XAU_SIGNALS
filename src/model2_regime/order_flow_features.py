@@ -309,6 +309,67 @@ def compute_quote_stability_features(df: pd.DataFrame, lookback: int = 20) -> pd
     return df
 
 
+def compute_synthetic_order_flow(df: pd.DataFrame, lookback: int = 20) -> pd.DataFrame:
+    """
+    Compute synthetic order flow features (from Model #1).
+    
+    Synthetic order flow = net_tick_pressure * volume
+    This detects genuine buying/selling vs fakeouts.
+    
+    Args:
+        df: DataFrame with OHLCV and quote data
+        lookback: Window for rolling metrics
+        
+    Returns:
+        DataFrame with synthetic order flow features added
+    """
+    df = df.copy()
+    
+    # Need mid price for tick direction
+    if 'avg_mid' in df.columns:
+        mid = df['avg_mid']
+    elif 'close' in df.columns:
+        mid = df['close']
+    else:
+        logger.warning("No mid/close price available for synthetic order flow")
+        df['synthetic_order_flow'] = 0.0
+        df['flow_cvd_60'] = 0.0
+        df['flow_divergence'] = 0.0
+        return df
+    
+    # Compute tick direction (up = +1, down = -1, unchanged = 0)
+    tick_dir = np.sign(mid.diff()).fillna(0)
+    
+    # Net tick pressure (sum of tick directions per bar)
+    # For 5-min bars, we aggregate tick directions
+    net_tick_pressure = tick_dir
+    
+    # Synthetic order flow = net_tick_pressure * volume
+    df['synthetic_order_flow'] = net_tick_pressure * df['volume']
+    
+    # Cumulative Volume Delta (CVD) over 60 bars (5 hours on 5-min bars)
+    df['flow_cvd_60'] = df['synthetic_order_flow'].rolling(60, min_periods=10).sum()
+    
+    # Flow divergence: Compare price return vs flow trend
+    ret_60 = mid.pct_change(60)
+    ret_mean = ret_60.rolling(100, min_periods=20).mean()
+    ret_std = ret_60.rolling(100, min_periods=20).std()
+    ret_norm = (ret_60 - ret_mean) / (ret_std + 1e-8)
+    
+    flow_mean = df['flow_cvd_60'].rolling(100, min_periods=20).mean()
+    flow_std = df['flow_cvd_60'].rolling(100, min_periods=20).std()
+    flow_norm = (df['flow_cvd_60'] - flow_mean) / (flow_std + 1e-8)
+    
+    df['flow_divergence'] = flow_norm - ret_norm
+    
+    # Fill NaNs
+    df['synthetic_order_flow'] = df['synthetic_order_flow'].fillna(0)
+    df['flow_cvd_60'] = df['flow_cvd_60'].fillna(0)
+    df['flow_divergence'] = df['flow_divergence'].fillna(0)
+    
+    return df
+
+
 def build_order_flow_features(
     df: pd.DataFrame,
     lookback: int = 20
@@ -332,6 +393,9 @@ def build_order_flow_features(
     df = compute_spread_features(df, lookback)
     df = compute_trade_intensity_features(df, lookback)
     df = compute_quote_stability_features(df, lookback)
+    
+    # Add synthetic order flow (NEW - from Model #1)
+    df = compute_synthetic_order_flow(df, lookback)
     
     logger.info(f"Built {len([c for c in df.columns if c not in ['open', 'high', 'low', 'close', 'volume']])} order flow features")
     

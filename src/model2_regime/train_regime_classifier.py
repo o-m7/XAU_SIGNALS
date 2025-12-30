@@ -44,12 +44,16 @@ MODELS_DIR = PROJECT_ROOT / "models" / "model2_regime"
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def load_and_aggregate_data(start_date: str = "2024-01-01", end_date: str = "2025-12-22"):
+def load_and_aggregate_data(start_date: str = "2020-01-01", end_date: str = "2025-12-22"):
     """Load 1-minute data and aggregate to 5-minute bars."""
     logger.info(f"Loading data from {start_date} to {end_date}...")
     
     # Load existing features (has 1-minute bars and quotes merged)
-    features_path = DATA_DIR / "features" / "xauusd_features_all.parquet"
+    # Try 2020-2025 features first, fallback to older files
+    features_path = DATA_DIR / "features" / "xauusd_features_2020_2025.parquet"
+    
+    if not features_path.exists():
+        features_path = DATA_DIR / "features" / "xauusd_features_all.parquet"
     
     if not features_path.exists():
         logger.error(f"Features file not found: {features_path}")
@@ -237,7 +241,7 @@ def main():
     
     # Load and aggregate data
     df = load_and_aggregate_data(
-        start_date="2024-01-01",
+        start_date="2020-01-01",
         end_date="2025-12-22"
     )
     

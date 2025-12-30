@@ -242,6 +242,9 @@ def get_feature_columns_for_regime_classifier() -> list:
         'ofi', 'ofi_persistence', 'ofi_normalized',
         'signed_volume_sum', 'volume_imbalance', 'cum_volume_imbalance',
         
+        # Synthetic order flow (NEW - from Model #1)
+        'synthetic_order_flow', 'flow_cvd_60', 'flow_divergence',
+        
         # Toxicity
         'toxicity', 'toxicity_zscore',
         

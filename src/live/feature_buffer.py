@@ -647,6 +647,86 @@ class FeatureBuffer:
         
         # ATR percentile
         atr_lookback = 100
+        
+        # =================================================================
+        # Model #3 Features: CMF and MACD
+        # =================================================================
+        # Chaikin Money Flow (CMF)
+        high_low = df["high"] - df["low"]
+        close_low = df["close"] - df["low"]
+        high_close = df["high"] - df["close"]
+        mf_multiplier = np.where(high_low > 0, (close_low - high_close) / high_low, 0.0)
+        mf_volume = mf_multiplier * df["volume"]
+        df["cmf"] = (mf_volume.rolling(20, min_periods=1).sum() / 
+                     df["volume"].rolling(20, min_periods=1).sum())
+        df["cmf_momentum"] = df["cmf"].diff(20)
+        cmf_mean = df["cmf"].rolling(40, min_periods=20).mean()
+        cmf_std = df["cmf"].rolling(40, min_periods=20).std()
+        df["cmf_zscore"] = (df["cmf"] - cmf_mean) / (cmf_std + 1e-8)
+        df["cmf_trend"] = df["cmf"].rolling(20, min_periods=20).apply(
+            lambda x: np.polyfit(range(len(x)), x, 1)[0] if len(x) >= 20 else 0,
+            raw=False
+        )
+        
+        # MACD
+        ema_fast = df["close"].ewm(span=12, adjust=False).mean()
+        ema_slow = df["close"].ewm(span=26, adjust=False).mean()
+        df["macd"] = ema_fast - ema_slow
+        df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
+        df["macd_histogram"] = df["macd"] - df["macd_signal"]
+        df["macd_momentum"] = df["macd"].diff()
+        df["macd_signal_momentum"] = df["macd_signal"].diff()
+        df["macd_above_signal"] = (df["macd"] > df["macd_signal"]).astype(int)
+        df["macd_cross_up"] = ((df["macd"] > df["macd_signal"]) & 
+                               (df["macd"].shift(1) <= df["macd_signal"].shift(1))).astype(int)
+        df["macd_cross_down"] = ((df["macd"] < df["macd_signal"]) & 
+                                 (df["macd"].shift(1) >= df["macd_signal"].shift(1))).astype(int)
+        df["macd_hist_momentum"] = df["macd_histogram"].diff()
+        macd_mean = df["macd"].rolling(52, min_periods=26).mean()
+        macd_std = df["macd"].rolling(52, min_periods=26).std()
+        df["macd_zscore"] = (df["macd"] - macd_mean) / (macd_std + 1e-8)
+        
+        # Additional indicators for Model #3
+        # RSI
+        delta = df["close"].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14, min_periods=1).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14, min_periods=1).mean()
+        rs = gain / (loss + 1e-8)
+        df["rsi"] = 100 - (100 / (1 + rs))
+        
+        # Bollinger Bands
+        df["bb_middle"] = df["close"].rolling(20, min_periods=1).mean()
+        bb_std = df["close"].rolling(20, min_periods=1).std()
+        df["bb_upper"] = df["bb_middle"] + (bb_std * 2)
+        df["bb_lower"] = df["bb_middle"] - (bb_std * 2)
+        df["bb_width"] = (df["bb_upper"] - df["bb_lower"]) / df["bb_middle"]
+        df["bb_position"] = (df["close"] - df["bb_lower"]) / (df["bb_upper"] - df["bb_lower"] + 1e-8)
+        
+        # Volume ratio
+        df["volume_sma"] = df["volume"].rolling(20, min_periods=1).mean()
+        df["volume_ratio"] = df["volume"] / (df["volume_sma"] + 1e-8)
+        
+        # Price momentum
+        df["price_momentum_5"] = df["close"].pct_change(5)
+        df["price_momentum_20"] = df["close"].pct_change(20)
+        
+        # Moving averages
+        df["sma_20"] = df["close"].rolling(20, min_periods=1).mean()
+        df["sma_50"] = df["close"].rolling(50, min_periods=1).mean()
+        df["price_vs_sma20"] = (df["close"] - df["sma_20"]) / df["sma_20"]
+        df["price_vs_sma50"] = (df["close"] - df["sma_50"]) / df["sma_50"]
+        
+        # Fill NaNs for Model #3 features
+        model3_cols = ['cmf', 'cmf_momentum', 'cmf_zscore', 'cmf_trend',
+                      'macd', 'macd_signal', 'macd_histogram', 'macd_momentum',
+                      'macd_signal_momentum', 'macd_above_signal', 'macd_cross_up',
+                      'macd_cross_down', 'macd_hist_momentum', 'macd_zscore',
+                      'rsi', 'bb_middle', 'bb_upper', 'bb_lower', 'bb_width', 'bb_position',
+                      'volume_ratio', 'price_momentum_5', 'price_momentum_20',
+                      'price_vs_sma20', 'price_vs_sma50']
+        for col in model3_cols:
+            if col in df.columns:
+                df[col] = df[col].fillna(0).infer_objects(copy=False)
         df["atr_percentile"] = df["ATR_14"].rolling(atr_lookback, min_periods=10).apply(
             lambda x: pd.Series(x).rank(pct=True).iloc[-1] if len(x) > 0 else 0.5,
             raw=False

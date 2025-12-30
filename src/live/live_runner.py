@@ -58,6 +58,7 @@ else:
 from .polygon_stream import PolygonStream, WSMode
 from .feature_buffer import FeatureBuffer
 from .signal_engine import SignalEngine
+from .multi_model_engine import MultiModelSignalEngine, ModelConfig
 from .telegram_bot import TelegramBot
 from .risk_guard import RiskGuard
 from .symbol_resolver import SymbolResolver
@@ -85,6 +86,7 @@ logger = logging.getLogger("LiveRunner")
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 DEFAULT_MODEL_PATH = PROJECT_ROOT / "models" / "y_tb_60_hgb_tuned.joblib"
+DEFAULT_MODEL3_PATH = PROJECT_ROOT / "models" / "model3_cmf_macd" / "model3_cmf_macd.joblib"
 LOCK_FILE = PROJECT_ROOT / ".live_runner.lock"
 PID_FILE = PROJECT_ROOT / ".live_runner.pid"
 
@@ -251,12 +253,28 @@ class LiveRunner:
         # 1. Feature buffer
         self.feature_buffer = FeatureBuffer(max_window=500)
         
-        # 2. Signal engine
-        self.signal_engine = SignalEngine(
-            model_path=model_path,
-            threshold_long=threshold_long,
-            threshold_short=threshold_short,
-        )
+        # 2. Multi-model signal engine (Model #1 and Model #3)
+        model1_path = model_path  # Model #1
+        model3_path = PROJECT_ROOT / "models" / "model3_cmf_macd" / "model3_cmf_macd.joblib"
+        
+        models = [
+            ModelConfig(
+                name="model1",
+                model_path=str(model1_path),
+                threshold_long=threshold_long,
+                threshold_short=threshold_short,
+                enabled=True
+            ),
+            ModelConfig(
+                name="model3",
+                model_path=str(model3_path),
+                threshold_long=0.70,  # From backtest results
+                threshold_short=0.35,  # From backtest results
+                enabled=model3_path.exists()  # Only enable if model exists
+            ),
+        ]
+        
+        self.signal_engine = MultiModelSignalEngine(models)
         
         # 3. Risk guard with confidence-based gating
         self.risk_guard = RiskGuard(
@@ -334,12 +352,14 @@ class LiveRunner:
             
             # Send ready notification
             if self.feature_buffer.is_ready():
+                model_names = ", ".join([m.name for m in self.signal_engine.models if m.enabled])
                 self.telegram_bot.send_alert(
                     "🚀 Signal Engine Ready",
                     f"Symbol: {self.resolver.display_name()}\n"
                     f"Mode: REST backfill + {self.ws_mode.value}\n"
-                    f"Model: y_tb_60\n"
-                    f"Thresholds: L≥{self.threshold_long}, S≤{self.threshold_short}\n"
+                    f"Models: {model_names}\n"
+                    f"Model #1 Thresholds: L≥{self.threshold_long}, S≤{self.threshold_short}\n"
+                    f"Model #3 Thresholds: L≥0.70, S≤0.35\n"
                     f"Risk: {self.risk_pct*100:.2f}%\n"
                     f"Bars loaded: {self.feature_buffer.get_bar_count()}"
                 )
@@ -425,11 +445,14 @@ class LiveRunner:
             self._price_log_count = 0
         self._price_log_count += 1
         if self._price_log_count % 10 == 0 and self._current_price and feature_row is not None:
-            # Generate signal to get P(up) for logging
+            # Generate signals to get P(up) for logging
             try:
-                result = self.signal_engine.generate_signal(feature_row, self._current_price)
-                proba_up = result.get("proba_up", 0.0)
-                logger.info(f"💰 Price: {self._current_price:.2f} | P(up)={proba_up:.4f} | Source: {event.get('source', 'unknown')}")
+                results = self.signal_engine.generate_signals(feature_row, self._current_price)
+                proba_strs = []
+                for model_name, result in results.items():
+                    proba_up = result.get("proba_up", 0.0)
+                    proba_strs.append(f"{model_name}:{proba_up:.3f}")
+                logger.info(f"💰 Price: {self._current_price:.2f} | {' | '.join(proba_strs)} | Source: {event.get('source', 'unknown')}")
             except Exception as e:
                 logger.debug(f"Could not compute P(up) for price log: {e}")
                 logger.info(f"💰 Price: {self._current_price:.2f} | Source: {event.get('source', 'unknown')}")
@@ -438,12 +461,14 @@ class LiveRunner:
         if not self._warmup_notified:
             self._warmup_notified = True
             logger.info("🚀 WARMUP COMPLETE - Starting signal generation")
+            model_names = ", ".join([m.name for m in self.signal_engine.models if m.enabled])
             self.telegram_bot.send_alert(
                 "🚀 Signal Engine Ready (Warmup Complete)",
                 f"Symbol: {self.resolver.display_name()}\n"
                 f"Mode: {self.ws_mode.value}\n"
-                f"Model: y_tb_60\n"
-                f"Thresholds: L≥{self.threshold_long}, S≤{self.threshold_short}\n"
+                f"Models: {model_names}\n"
+                f"Model #1 Thresholds: L≥{self.threshold_long}, S≤{self.threshold_short}\n"
+                f"Model #3 Thresholds: L≥0.70, S≤0.35\n"
                 f"Risk: {self.risk_pct*100:.2f}%\n"
                 f"Bars collected: {self.feature_buffer.get_bar_count()}"
             )
@@ -453,83 +478,90 @@ class LiveRunner:
             self._process_signal(feature_row, event["timestamp"])
     
     def _process_signal(self, feature_row, timestamp):
-        """Process features and potentially generate a signal."""
-        # Generate signal with current price for TP/SL calculation
-        result = self.signal_engine.generate_signal(
+        """Process features and potentially generate signals from all models."""
+        # Generate signals from all models
+        all_results = self.signal_engine.generate_signals(
             feature_row, 
             timestamp,
             current_price=self._current_price
         )
-        signal = result["signal"]
-        proba_up = result["proba_up"]
-        tp = result.get("tp")
-        sl = result.get("sl")
         
-        # Log signal (reduce noise for FLAT signals)
-        price_str = f"{self._current_price:.2f}" if self._current_price else "N/A"
-        tp_str = f"{tp:.2f}" if tp else "N/A"
-        sl_str = f"{sl:.2f}" if sl else "N/A"
-        conviction = result.get("conviction", 1.0)
-        conviction_str = f"Conviction={conviction:.2f}" if conviction < 1.0 else ""
-        
-        # Skip FLAT signals (don't log every FLAT to reduce noise)
-        if signal == "FLAT":
-            # Only log FLAT occasionally (every 100th) to show system is working
-            if not hasattr(self, '_flat_count'):
-                self._flat_count = 0
-            self._flat_count += 1
-            if self._flat_count % 100 == 0:
-                logger.debug(f"Signal: {signal} | P(up)={proba_up:.4f} | Price={price_str} (processed {self._flat_count} FLAT signals)")
-            return
-        
-        # Always log non-FLAT signals
-        logger.info(f"🎯 Signal: {signal} | P(up)={proba_up:.4f} | Price={price_str} | TP={tp_str} | SL={sl_str} {conviction_str}")
-        
-        # Check risk rules with confidence-based gating
-        decision = self.risk_guard.check_signal(signal, proba_up, timestamp)
-        
-        if decision.allow:
-            self._signals_generated += 1
-            self._last_signal_time = timestamp
+        # Process each model's signal independently
+        for model_name, result in all_results.items():
+            signal = result["signal"]
+            proba_up = result["proba_up"]
+            tp = result.get("tp")
+            sl = result.get("sl")
+            model_display = result.get("model_display", model_name)
             
-            # Record signal for change-filtering
-            self.risk_guard.record_signal(signal, timestamp)
-            
-            # Determine confidence display
-            if signal == "LONG":
-                confidence = proba_up
-            else:
-                confidence = 1 - proba_up
-            
-            # Get conviction score (if available)
+            # Log signal (reduce noise for FLAT signals)
+            price_str = f"{self._current_price:.2f}" if self._current_price else "N/A"
+            tp_str = f"{tp:.2f}" if tp else "N/A"
+            sl_str = f"{sl:.2f}" if sl else "N/A"
             conviction = result.get("conviction", 1.0)
+            conviction_str = f"Conviction={conviction:.2f}" if conviction < 1.0 else ""
             
-            # Adjust risk based on conviction (reduce risk for low-conviction signals)
-            adjusted_risk = self.risk_pct * conviction if conviction > 0 else self.risk_pct
+            # Skip FLAT signals (don't log every FLAT to reduce noise)
+            if signal == "FLAT":
+                # Only log FLAT occasionally (every 100th) to show system is working
+                if not hasattr(self, '_flat_count'):
+                    self._flat_count = {}
+                if model_name not in self._flat_count:
+                    self._flat_count[model_name] = 0
+                self._flat_count[model_name] += 1
+                if self._flat_count[model_name] % 100 == 0:
+                    logger.debug(f"[{model_display}] Signal: {signal} | P(up)={proba_up:.4f} | Price={price_str} (processed {self._flat_count[model_name]} FLAT signals)")
+                continue
             
-            # Build extra info with conviction warning if needed
-            extra_info = {
-                "Cooldown": f"{decision.cooldown_s}s",
-                "DD": f"{self.risk_guard.get_status()['drawdown_pct']*100:.2f}%",
-            }
-            if conviction < 1.0:
-                extra_info["⚠️ Conviction"] = f"{conviction:.0%} (Reduced Risk)"
+            # Always log non-FLAT signals
+            logger.info(f"🎯 [{model_display}] Signal: {signal} | P(up)={proba_up:.4f} | Price={price_str} | TP={tp_str} | SL={sl_str} {conviction_str}")
             
-            # Send Telegram notification with TP/SL
-            self.telegram_bot.send_signal(
-                signal=signal,
-                proba_up=proba_up,
-                timestamp=timestamp,
-                price=self._current_price,
-                tp=tp,
-                sl=sl,
-                risk_pct=adjusted_risk,  # Use adjusted risk
-                extra_info=extra_info
-            )
+            # Check risk rules with confidence-based gating
+            decision = self.risk_guard.check_signal(signal, proba_up, timestamp)
             
-            logger.info(f"🔔 SIGNAL SENT: {signal} @ {self._current_price:.2f} | TP={tp_str} | SL={sl_str}")
-        else:
-            logger.debug(f"Signal blocked: {decision.reason}")
+            if decision.allow:
+                self._signals_generated += 1
+                self._last_signal_time = timestamp
+                
+                # Record signal for change-filtering
+                self.risk_guard.record_signal(signal, timestamp)
+                
+                # Determine confidence display
+                if signal == "LONG":
+                    confidence = proba_up
+                else:
+                    confidence = 1 - proba_up
+                
+                # Get conviction score (if available)
+                conviction = result.get("conviction", 1.0)
+                
+                # Adjust risk based on conviction (reduce risk for low-conviction signals)
+                adjusted_risk = self.risk_pct * conviction if conviction > 0 else self.risk_pct
+                
+                # Build extra info with conviction warning if needed
+                extra_info = {
+                    "Cooldown": f"{decision.cooldown_s}s",
+                    "DD": f"{self.risk_guard.get_status()['drawdown_pct']*100:.2f}%",
+                }
+                if conviction < 1.0:
+                    extra_info["⚠️ Conviction"] = f"{conviction:.0%} (Reduced Risk)"
+                
+                # Send Telegram notification with TP/SL and model name
+                self.telegram_bot.send_signal(
+                    signal=signal,
+                    proba_up=proba_up,
+                    timestamp=timestamp,
+                    price=self._current_price,
+                    tp=tp,
+                    sl=sl,
+                    risk_pct=adjusted_risk,  # Use adjusted risk
+                    model_name=model_display,  # Pass model display name
+                    extra_info=extra_info
+                )
+                
+                logger.info(f"🔔 SIGNAL SENT [{model_display}]: {signal} @ {self._current_price:.2f} | TP={tp_str} | SL={sl_str}")
+            else:
+                logger.debug(f"[{model_display}] Signal blocked: {decision.reason}")
     
     def get_status(self) -> dict:
         """Get current runner status."""

@@ -124,9 +124,17 @@ class TelegramBot:
                 rr = tp_pips / sl_pips
                 lines.append(f"<b>R:R:</b> 1:{rr:.1f}")
         
+        # Model display name
+        if "Model #1" in model_name or "Triple-Barrier" in model_name:
+            model_display = "Model #1 (Triple-Barrier)"
+        elif "Model #3" in model_name or "CMF" in model_name or "MACD" in model_name:
+            model_display = "Model #3 (CMF/MACD)"
+        else:
+            model_display = model_name
+        
         lines.extend([
             "",
-            f"<b>Model:</b> {model_name} (60-bar TB)",
+            f"<b>Model:</b> {model_display}",
             f"<b>Time:</b> {timestamp.strftime('%H:%M UTC')}",
             f"<b>Risk:</b> {risk_pct*100:.2f}%",
             f"<b>Account Mode:</b> Funded",

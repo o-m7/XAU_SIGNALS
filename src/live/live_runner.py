@@ -287,8 +287,8 @@ class LiveRunner:
                 ModelConfig(
                     name="model3",
                     model_path=str(model3_path),
-                    threshold_long=0.70,  # From backtest results
-                    threshold_short=0.35,  # From backtest results
+                    threshold_long=0.55,  # Balanced thresholds (was 0.70 - too high)
+                    threshold_short=0.45,  # Balanced thresholds (was 0.35 - too low)
                     enabled=model3_path.exists()  # Only enable if model exists
                 ),
             ]

@@ -89,6 +89,11 @@ class FeatureBuffer:
         self._current_bar: Optional[Dict] = None
         self._current_bar_start: Optional[datetime] = None
         
+        # Store latest quote bid/ask for merging into aggregate bars
+        self._last_quote_bid: Optional[float] = None
+        self._last_quote_ask: Optional[float] = None
+        self._last_quote_time: Optional[datetime] = None
+        
         # Warmup tracking
         self._warmup_complete = False
         self._last_warmup_log: Optional[datetime] = None

@@ -87,12 +87,13 @@ class ModelArtifact:
 # DATA LOADING
 # =============================================================================
 
-def load_features_data() -> pd.DataFrame:
+def load_features_data(features_path: Path = None) -> pd.DataFrame:
     """Load the features parquet file."""
-    if not FEATURES_PATH.exists():
-        raise FileNotFoundError(f"Features file not found: {FEATURES_PATH}")
-    
-    df = pd.read_parquet(FEATURES_PATH)
+    path = features_path or FEATURES_PATH
+    if not path.exists():
+        raise FileNotFoundError(f"Features file not found: {path}")
+
+    df = pd.read_parquet(path)
     
     if not isinstance(df.index, pd.DatetimeIndex):
         if "timestamp" in df.columns:
@@ -490,7 +491,14 @@ def parse_args():
         default=str(REPORTS_DIR / "funded_equity_curve.csv"),
         help="Output path for equity curve CSV"
     )
-    
+
+    parser.add_argument(
+        "--features_path",
+        type=str,
+        default=None,
+        help="Path to features parquet file (default: data/features/xauusd_features_2024.parquet)"
+    )
+
     return parser.parse_args()
 
 
@@ -510,8 +518,9 @@ def main():
         print(f"    - {art.path}: {len(art.features)} features")
     
     # Load data
+    features_path = Path(args.features_path) if args.features_path else None
     print(f"\n  Loading features data...")
-    df = load_features_data()
+    df = load_features_data(features_path)
     print(f"    Loaded: {len(df):,} rows")
     
     # Prepare data

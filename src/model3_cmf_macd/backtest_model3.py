@@ -31,10 +31,10 @@ logger = logging.getLogger(__name__)
 MODELS_DIR = PROJECT_ROOT / "models" / "model3_cmf_macd"
 FEATURES_DIR = PROJECT_ROOT / "data" / "features"
 
-# Threshold search grid
-LONG_THRESHOLDS = np.arange(0.55, 0.80, 0.05)
-SHORT_THRESHOLDS = np.arange(0.20, 0.46, 0.05)
-MIN_TRADES = 200
+# Threshold search grid - balanced range for both long and short
+LONG_THRESHOLDS = np.arange(0.52, 0.76, 0.02)   # 0.52 to 0.74
+SHORT_THRESHOLDS = np.arange(0.26, 0.50, 0.02)  # 0.26 to 0.48
+MIN_TRADES = 100  # Lower minimum to see more combinations
 
 
 @dataclass
@@ -43,6 +43,8 @@ class BacktestResult:
     threshold_long: float
     threshold_short: float
     n_trades: int
+    n_longs: int
+    n_shorts: int
     win_rate: float
     avg_ret_per_trade: float
     cum_ret: float
@@ -79,8 +81,8 @@ def load_test_data():
     # Build CMF and MACD features
     df = build_cmf_macd_features(df)
     
-    # Add labels
-    df = add_triple_barrier_labels(df, h_max=60, tp_mult=1.5, sl_mult=1.0)
+    # Add labels - use symmetric barriers (1.0/1.0) to avoid directional bias
+    df = add_triple_barrier_labels(df, h_max=60, tp_mult=1.0, sl_mult=1.0)
     
     # Get feature columns
     feature_cols = get_feature_columns_for_model3()
@@ -107,16 +109,22 @@ def run_backtest(y_test, proba_test, close_test, threshold_long, threshold_short
     signal_long = (proba_test >= threshold_long).astype(int)
     signal_short = (proba_test <= threshold_short).astype(int)
     signal = signal_long - signal_short  # +1 for long, -1 for short, 0 for flat
-    
+
+    # Count longs and shorts
+    n_longs = int((signal == 1).sum())
+    n_shorts = int((signal == -1).sum())
+
     # Filter to only trades (non-zero signals)
     trade_mask = signal != 0
     n_trades = trade_mask.sum()
-    
+
     if n_trades == 0:
         return BacktestResult(
             threshold_long=threshold_long,
             threshold_short=threshold_short,
             n_trades=0,
+            n_longs=0,
+            n_shorts=0,
             win_rate=0.0,
             avg_ret_per_trade=0.0,
             cum_ret=0.0,
@@ -147,6 +155,8 @@ def run_backtest(y_test, proba_test, close_test, threshold_long, threshold_short
         threshold_long=threshold_long,
         threshold_short=threshold_short,
         n_trades=n_trades,
+        n_longs=n_longs,
+        n_shorts=n_shorts,
         win_rate=win_rate,
         avg_ret_per_trade=avg_ret,
         cum_ret=cum_ret,
@@ -211,8 +221,25 @@ def main():
     # Get predictions
     logger.info("Generating predictions...")
     proba_test = model.predict_proba(X_test)[:, 1]  # Probability of class 1 (up)
-    
-    logger.info(f"Proba range: [{proba_test.min():.4f}, {proba_test.max():.4f}]")
+
+    # Probability distribution analysis
+    logger.info("\n" + "="*80)
+    logger.info("PROBABILITY DISTRIBUTION ANALYSIS")
+    logger.info("="*80)
+    logger.info(f"  Min: {proba_test.min():.4f}")
+    logger.info(f"  Max: {proba_test.max():.4f}")
+    logger.info(f"  Mean: {proba_test.mean():.4f}")
+    logger.info(f"  Median: {np.median(proba_test):.4f}")
+    logger.info(f"  Std: {proba_test.std():.4f}")
+
+    # Distribution buckets
+    logger.info("\n  Probability Distribution:")
+    buckets = [(0.0, 0.3), (0.3, 0.4), (0.4, 0.5), (0.5, 0.6), (0.6, 0.7), (0.7, 1.0)]
+    for low, high in buckets:
+        count = ((proba_test >= low) & (proba_test < high)).sum()
+        pct = count / len(proba_test) * 100
+        bar = "#" * int(pct / 2)
+        logger.info(f"    {low:.1f}-{high:.1f}: {count:>6,} ({pct:>5.1f}%) {bar}")
     
     # Search thresholds
     logger.info("Searching for best thresholds...")
@@ -226,13 +253,14 @@ def main():
     logger.info("\n" + "="*80)
     logger.info("TOP 10 THRESHOLD COMBINATIONS")
     logger.info("="*80)
-    logger.info(f"\n{'Idx':>3}  {'tl':>5}  {'ts':>5}  {'trades':>7}  {'win%':>6}  {'avg_R':>7}  {'cum_R':>8}  {'sharpe':>7}")
-    logger.info("-" * 60)
-    
+    logger.info(f"\n{'Idx':>3}  {'tl':>5}  {'ts':>5}  {'trades':>7}  {'L/S':>10}  {'win%':>6}  {'avg_R':>7}  {'cum_R':>8}  {'sharpe':>7}")
+    logger.info("-" * 75)
+
     for i, r in enumerate(results[:10]):
         marker = " *" if i == 0 else ""
+        ls_ratio = f"{r.n_longs}/{r.n_shorts}"
         logger.info(f"{i+1:>3}  {r.threshold_long:>5.2f}  {r.threshold_short:>5.2f}  "
-                   f"{r.n_trades:>7,}  {r.win_rate*100:>5.1f}%  {r.avg_ret_per_trade:>+7.4f}  "
+                   f"{r.n_trades:>7,}  {ls_ratio:>10}  {r.win_rate*100:>5.1f}%  {r.avg_ret_per_trade:>+7.4f}  "
                    f"{r.cum_ret:>+8.1f}  {r.sharpe:>7.2f}{marker}")
     
     # Best result
@@ -241,7 +269,9 @@ def main():
     logger.info("BEST CONFIGURATION")
     logger.info("="*80)
     logger.info(f"  Thresholds: Long={best.threshold_long:.2f}, Short={best.threshold_short:.2f}")
-    logger.info(f"  Trades: {best.n_trades:,}")
+    logger.info(f"  Trades: {best.n_trades:,} (Longs: {best.n_longs}, Shorts: {best.n_shorts})")
+    long_pct = best.n_longs / best.n_trades * 100 if best.n_trades > 0 else 0
+    logger.info(f"  Long/Short Balance: {long_pct:.1f}% / {100-long_pct:.1f}%")
     logger.info(f"  Win Rate: {best.win_rate*100:.1f}%")
     logger.info(f"  Avg R/trade: {best.avg_ret_per_trade:+.4f}")
     logger.info(f"  Cumulative R: {best.cum_ret:+.1f}")

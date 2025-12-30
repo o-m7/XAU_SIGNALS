@@ -10,7 +10,7 @@ from .vwap import calculate_session_vwap, calculate_vwap_zscore
 from .regime import classify_regime, calculate_adx, calculate_atr
 from .features import build_model4_features, get_model4_feature_columns
 from .labels import add_reversion_labels, analyze_label_distribution
-from .train import run_training_pipeline
+from .train import run_training_pipeline, build_model4_features_from_5t, ensure_model4_features
 from .signal_engine import Model4SignalEngine, Signal, SignalResult
 
 __all__ = [
@@ -36,6 +36,8 @@ __all__ = [
 
     # Training
     'run_training_pipeline',
+    'build_model4_features_from_5t',
+    'ensure_model4_features',
 
     # Signal Engine
     'Model4SignalEngine',

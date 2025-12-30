@@ -28,20 +28,44 @@ def prepare_training_data(
     quotes_path: str = None,
     config: Model4Config = None
 ) -> pd.DataFrame:
-    """Load data and build features + labels."""
+    """
+    Load data and build features + labels.
+
+    Handles two input formats:
+    1. Raw 1-minute OHLCV data -> resamples and builds all features
+    2. Pre-computed 5T features with OHLCV -> builds VWAP features on top
+    """
 
     config = config or Model4Config()
 
     print("Loading data...")
-    df_1t = pd.read_parquet(data_path)
+    df_raw = pd.read_parquet(data_path)
 
     # Ensure proper datetime index
-    if not isinstance(df_1t.index, pd.DatetimeIndex):
-        if 'timestamp' in df_1t.columns:
-            df_1t['timestamp'] = pd.to_datetime(df_1t['timestamp'], utc=True)
-            df_1t = df_1t.set_index('timestamp')
+    if not isinstance(df_raw.index, pd.DatetimeIndex):
+        if 'timestamp' in df_raw.columns:
+            df_raw['timestamp'] = pd.to_datetime(df_raw['timestamp'], utc=True)
+            df_raw = df_raw.set_index('timestamp')
         else:
             raise ValueError("DataFrame must have DatetimeIndex or 'timestamp' column")
+
+    # Detect data type based on frequency and existing columns
+    has_ohlcv = all(col in df_raw.columns for col in ['open', 'high', 'low', 'close', 'volume'])
+    has_vwap = 'vwap' in df_raw.columns and 'vwap_zscore' in df_raw.columns
+
+    # Detect timeframe from index
+    if len(df_raw) > 1:
+        time_diff = (df_raw.index[1] - df_raw.index[0]).total_seconds()
+        is_1t = time_diff <= 60
+        is_5t = 240 < time_diff <= 360
+    else:
+        is_1t = False
+        is_5t = True
+
+    print(f"  Data shape: {df_raw.shape}")
+    print(f"  Timeframe: {'1T' if is_1t else '5T'}")
+    print(f"  Has OHLCV: {has_ohlcv}")
+    print(f"  Has VWAP: {has_vwap}")
 
     df_quotes = None
     if quotes_path and Path(quotes_path).exists():
@@ -52,12 +76,31 @@ def prepare_training_data(
                 df_quotes['timestamp'] = pd.to_datetime(df_quotes['timestamp'], utc=True)
                 df_quotes = df_quotes.set_index('timestamp')
 
-    print("Building features...")
-    df = build_model4_features(
-        df_1t, df_quotes,
-        config.base_timeframe,
-        config.vwap_session_hours
-    )
+    # Build features based on input type
+    if is_1t and has_ohlcv:
+        # Raw 1T data - full feature build with resampling
+        print("Building features from 1T OHLCV data...")
+        df = build_model4_features(
+            df_raw, df_quotes,
+            config.base_timeframe,
+            config.vwap_session_hours
+        )
+    elif has_ohlcv and not has_vwap:
+        # 5T OHLCV data - build VWAP features directly (no resampling)
+        print("Building VWAP features from 5T OHLCV data...")
+        df = build_model4_features_from_5t(
+            df_raw, df_quotes,
+            config.vwap_session_hours
+        )
+    elif has_vwap:
+        # Already has VWAP - just ensure regime and session features exist
+        print("Using pre-computed VWAP features...")
+        df = ensure_model4_features(df_raw, config)
+    else:
+        raise ValueError(
+            "Input data must have OHLCV columns (open, high, low, close, volume). "
+            f"Found columns: {list(df_raw.columns)[:10]}..."
+        )
 
     print("Creating reversion labels...")
     df = add_reversion_labels(
@@ -74,6 +117,147 @@ def prepare_training_data(
     print(f"  Base win rate: {stats['win_rate']:.1%}")
     print(f"  Long setups: {stats['long_setups']:,} (WR: {stats['long_win_rate']:.1%})")
     print(f"  Short setups: {stats['short_setups']:,} (WR: {stats['short_win_rate']:.1%})")
+
+    return df
+
+
+def build_model4_features_from_5t(
+    df: pd.DataFrame,
+    df_quotes: pd.DataFrame = None,
+    session_hours: int = 8
+) -> pd.DataFrame:
+    """Build VWAP features from pre-resampled 5T data."""
+    from .vwap import calculate_session_vwap, calculate_vwap_zscore
+    from .regime import classify_regime, calculate_atr
+    from .features import calculate_rsi
+
+    df = df.copy()
+
+    # ATR first (needed for z-score)
+    df = calculate_atr(df, period=14)
+    df = calculate_atr(df, period=5)
+
+    # VWAP features
+    df = calculate_session_vwap(df, session_hours=session_hours)
+    df = calculate_vwap_zscore(df)
+
+    # Regime features
+    df = classify_regime(df)
+
+    # Session position features
+    session_bars = int(session_hours * 60 / 5)  # 5T timeframe
+
+    df['session_high'] = df['high'].rolling(session_bars, min_periods=1).max()
+    df['session_low'] = df['low'].rolling(session_bars, min_periods=1).min()
+    df['session_range'] = df['session_high'] - df['session_low']
+
+    df['price_vs_session_high'] = (df['session_high'] - df['close']) / df['atr_14'].replace(0, np.nan)
+    df['price_vs_session_low'] = (df['close'] - df['session_low']) / df['atr_14'].replace(0, np.nan)
+    df['price_in_session_range'] = (df['close'] - df['session_low']) / df['session_range'].replace(0, np.nan)
+
+    # Momentum features
+    df['rsi_14'] = calculate_rsi(df['close'], length=14)
+    df['rsi_7'] = calculate_rsi(df['close'], length=7)
+
+    # RSI divergence
+    df['price_high_5'] = df['high'].rolling(5, min_periods=1).max()
+    df['price_low_5'] = df['low'].rolling(5, min_periods=1).min()
+    df['rsi_high_5'] = df['rsi_14'].rolling(5, min_periods=1).max()
+    df['rsi_low_5'] = df['rsi_14'].rolling(5, min_periods=1).min()
+
+    df['bearish_divergence'] = (
+        (df['close'] >= df['price_high_5'] * 0.999) &
+        (df['rsi_14'] < df['rsi_high_5'] - 5)
+    ).astype(int)
+
+    df['bullish_divergence'] = (
+        (df['close'] <= df['price_low_5'] * 1.001) &
+        (df['rsi_14'] > df['rsi_low_5'] + 5)
+    ).astype(int)
+
+    df['rsi_divergence'] = df['bearish_divergence'] - df['bullish_divergence']
+
+    # Bars at extreme z-score
+    df['at_upper_extreme'] = (df['vwap_zscore'] > 1.5).astype(int)
+    df['at_lower_extreme'] = (df['vwap_zscore'] < -1.5).astype(int)
+
+    df['bars_at_upper'] = df['at_upper_extreme'].groupby(
+        (~df['at_upper_extreme'].astype(bool)).cumsum()
+    ).cumsum()
+    df['bars_at_lower'] = df['at_lower_extreme'].groupby(
+        (~df['at_lower_extreme'].astype(bool)).cumsum()
+    ).cumsum()
+    df['bars_since_extreme'] = np.maximum(df['bars_at_upper'], df['bars_at_lower'])
+
+    # Spread features (placeholder if no quotes)
+    if df_quotes is not None and len(df_quotes) > 0:
+        quotes_resampled = df_quotes.resample('5T').agg({
+            'ask_price': 'mean',
+            'bid_price': 'mean',
+        })
+        quotes_resampled['spread'] = quotes_resampled['ask_price'] - quotes_resampled['bid_price']
+        quotes_resampled['mid'] = (quotes_resampled['ask_price'] + quotes_resampled['bid_price']) / 2
+        quotes_resampled['spread_pct'] = quotes_resampled['spread'] / quotes_resampled['mid'].replace(0, np.nan)
+        quotes_resampled['spread_zscore'] = (
+            (quotes_resampled['spread_pct'] - quotes_resampled['spread_pct'].rolling(60).mean()) /
+            quotes_resampled['spread_pct'].rolling(60).std().replace(0, np.nan)
+        )
+        quote_counts = df_quotes.resample('5T').size()
+        quotes_resampled['quote_rate'] = quote_counts
+        quotes_resampled['quote_rate_zscore'] = (
+            (quotes_resampled['quote_rate'] - quotes_resampled['quote_rate'].rolling(60).mean()) /
+            quotes_resampled['quote_rate'].rolling(60).std().replace(0, np.nan)
+        )
+        df = df.join(quotes_resampled[['spread_pct', 'spread_zscore', 'quote_rate_zscore']], how='left')
+    else:
+        df['spread_pct'] = 0.0001
+        df['spread_zscore'] = 0.0
+        df['quote_rate_zscore'] = 0.0
+
+    # Time features
+    df['hour'] = df.index.hour
+    df['hour_sin'] = np.sin(2 * np.pi * df['hour'] / 24)
+    df['hour_cos'] = np.cos(2 * np.pi * df['hour'] / 24)
+
+    df['minutes_since_london'] = (df['hour'] - 7) * 60 + df.index.minute
+    df['minutes_since_london'] = df['minutes_since_london'].clip(lower=0)
+
+    df['is_london'] = ((df['hour'] >= 7) & (df['hour'] < 16)).astype(int)
+    df['is_ny'] = ((df['hour'] >= 13) & (df['hour'] < 21)).astype(int)
+    df['is_overlap'] = ((df['hour'] >= 13) & (df['hour'] < 16)).astype(int)
+
+    # Cleanup
+    df = df.replace([np.inf, -np.inf], np.nan).ffill().dropna()
+
+    return df
+
+
+def ensure_model4_features(df: pd.DataFrame, config: Model4Config) -> pd.DataFrame:
+    """Ensure all required Model 4 features exist, adding missing ones."""
+    from .regime import classify_regime, calculate_atr
+
+    df = df.copy()
+
+    # Ensure ATR exists
+    if 'atr_14' not in df.columns:
+        df = calculate_atr(df, period=14)
+
+    # Ensure regime exists
+    if 'regime_tradeable' not in df.columns:
+        df = classify_regime(df)
+
+    # Ensure session features
+    if 'is_london' not in df.columns:
+        df['hour'] = df.index.hour
+        df['is_london'] = ((df['hour'] >= 7) & (df['hour'] < 16)).astype(int)
+        df['is_ny'] = ((df['hour'] >= 13) & (df['hour'] < 21)).astype(int)
+
+    # Fill any remaining required features with defaults
+    required_features = get_model4_feature_columns()
+    for feat in required_features:
+        if feat not in df.columns:
+            print(f"  [WARN] Missing feature '{feat}', filling with 0")
+            df[feat] = 0.0
 
     return df
 
@@ -237,8 +421,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--data_path",
         type=str,
-        required=True,
-        help="Path to 1-minute OHLCV parquet file"
+        default="data/features/xauusd_features_2020_2025.parquet",
+        help="Path to OHLCV parquet file (1T or 5T timeframe)"
     )
     parser.add_argument(
         "--quotes_path",

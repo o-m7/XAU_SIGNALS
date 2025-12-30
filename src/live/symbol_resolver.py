@@ -42,8 +42,8 @@ class SymbolResolver:
     quote: str = "USD"
     
     def ws_quotes(self) -> str:
-        """WebSocket channel for forex quotes: C:XAU-USD"""
-        return f"C:{self.base}-{self.quote}"
+        """WebSocket channel for forex quotes: C.XAU/USD (correct format)"""
+        return f"C.{self.base}/{self.quote}"
     
     def ws_aggs_minute(self) -> str:
         """WebSocket channel for minute aggregates: CA.XAU/USD"""

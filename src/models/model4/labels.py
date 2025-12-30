@@ -1,114 +1,146 @@
 """
-Model 4 Labeling
-Simple directional labels - NO triple-barrier
+Labeling for Mean Reversion Model
+
+The model predicts: "Given price is stretched from VWAP, will it revert
+to VWAP before hitting the stop loss?"
+
+This is a CONDITIONAL prediction - we only create labels for bars where
+a setup exists (price stretched > threshold from VWAP).
 """
 import numpy as np
 import pandas as pd
 
 
-def add_directional_labels(
+def add_reversion_labels(
     df: pd.DataFrame,
-    horizon: int = 12,
-    threshold_atr_mult: float = 0.5,
+    zscore_threshold: float = 2.0,
+    stop_atr_mult: float = 1.5,
+    max_bars: int = 30,
     atr_col: str = 'atr_14'
 ) -> pd.DataFrame:
     """
-    Create directional labels based on future price movement.
+    Create labels for mean reversion outcomes.
 
-    Labels:
-        +1: Price moves UP more than threshold (good long entry)
-        -1: Price moves DOWN more than threshold (good short entry)
-         0: Neither (no clear direction - filter during training)
-
-    Parameters:
-    -----------
-    df : pd.DataFrame
-        DataFrame with OHLC and ATR
-    horizon : int
-        Number of bars to look ahead
-    threshold_atr_mult : float
-        Required move as multiple of ATR
-    atr_col : str
-        Name of ATR column
-
-    Returns:
-    --------
-    DataFrame with 'y_direction' column
-    """
-    df = df.copy()
-
-    # Future high and low within horizon
-    future_high = df['high'].rolling(horizon).max().shift(-horizon)
-    future_low = df['low'].rolling(horizon).min().shift(-horizon)
-
-    # Maximum up and down moves from current close
-    max_up_move = future_high - df['close']
-    max_down_move = df['close'] - future_low
-
-    # Threshold based on ATR
-    threshold = threshold_atr_mult * df[atr_col]
-
-    # Label logic
-    labels = np.zeros(len(df))
-
-    # Up move is larger AND exceeds threshold
-    up_condition = (max_up_move > max_down_move) & (max_up_move > threshold)
-
-    # Down move is larger AND exceeds threshold
-    down_condition = (max_down_move > max_up_move) & (max_down_move > threshold)
-
-    labels[up_condition] = 1
-    labels[down_condition] = -1
-
-    df['y_direction'] = labels.astype(int)
-
-    # Also store the move magnitudes for analysis
-    df['future_up_move'] = max_up_move
-    df['future_down_move'] = max_down_move
-
-    return df
-
-
-def add_trend_aligned_labels(
-    df: pd.DataFrame,
-    horizon: int = 12,
-    threshold_atr_mult: float = 0.5,
-    atr_col: str = 'atr_14',
-    trend_col: str = 'trend'
-) -> pd.DataFrame:
-    """
-    Create labels for "good entry in trend direction".
-
-    This is what Model 4 actually predicts:
-        1: Good entry point (price moves in trend direction)
-        0: Bad entry point (price moves against trend or insufficient move)
+    Label = 1: Price reverted to VWAP before hitting stop
+    Label = 0: Price hit stop before reverting to VWAP
+    Label = NaN: No setup (price not stretched) - filtered during training
 
     Parameters:
     -----------
     df : pd.DataFrame
-        DataFrame with OHLC, ATR, and trend column
-    horizon : int
-        Number of bars to look ahead
-    threshold_atr_mult : float
-        Required move as multiple of ATR
-    atr_col : str
-        Name of ATR column
-    trend_col : str
-        Name of trend column (1 for bullish, -1 for bearish)
+        Must have 'vwap_zscore', 'vwap', 'close', 'high', 'low', and ATR
+    zscore_threshold : float
+        Minimum z-score to qualify as a setup
+    stop_atr_mult : float
+        Stop distance as multiple of ATR
+    max_bars : int
+        Maximum bars to hold trade
 
     Returns:
     --------
-    DataFrame with 'y_good_entry' column
+    DataFrame with 'y_reversion' and 'setup_direction' columns
     """
     df = df.copy()
 
-    # First add directional labels
-    df = add_directional_labels(df, horizon, threshold_atr_mult, atr_col)
+    n = len(df)
+    labels = np.full(n, np.nan)  # NaN = no setup
 
-    # Good entry = direction matches trend
-    df['y_good_entry'] = (
-        (df[trend_col] == df['y_direction']) &
-        (df['y_direction'] != 0)
-    ).astype(int)
+    close = df['close'].values
+    high = df['high'].values
+    low = df['low'].values
+    vwap = df['vwap'].values
+    zscore = df['vwap_zscore'].values
+    atr = df[atr_col].values
+
+    for i in range(n - max_bars):
+        z = zscore[i]
+
+        # Check if setup exists
+        if abs(z) < zscore_threshold:
+            continue  # No setup
+
+        entry_price = close[i]
+        target = vwap[i]  # Target is VWAP
+        stop_distance = stop_atr_mult * atr[i]
+
+        if z > zscore_threshold:
+            # SHORT setup: price above VWAP
+            stop = entry_price + stop_distance
+
+            # Check future bars
+            for j in range(i + 1, min(i + max_bars + 1, n)):
+                # Check stop hit (price went higher)
+                if high[j] >= stop:
+                    labels[i] = 0  # Stop hit - loss
+                    break
+                # Check target hit (price reached VWAP)
+                if low[j] <= target:
+                    labels[i] = 1  # Target hit - win
+                    break
+            else:
+                # Time stop - consider it a loss (didn't revert in time)
+                labels[i] = 0
+
+        elif z < -zscore_threshold:
+            # LONG setup: price below VWAP
+            stop = entry_price - stop_distance
+
+            for j in range(i + 1, min(i + max_bars + 1, n)):
+                # Check stop hit (price went lower)
+                if low[j] <= stop:
+                    labels[i] = 0  # Stop hit - loss
+                    break
+                # Check target hit (price reached VWAP)
+                if high[j] >= target:
+                    labels[i] = 1  # Target hit - win
+                    break
+            else:
+                labels[i] = 0
+
+    df['y_reversion'] = labels
+
+    # Also store setup direction for analysis
+    df['setup_direction'] = np.where(
+        df['vwap_zscore'] > zscore_threshold, -1,  # SHORT setup
+        np.where(df['vwap_zscore'] < -zscore_threshold, 1, 0)  # LONG setup
+    )
 
     return df
+
+
+def analyze_label_distribution(df: pd.DataFrame) -> dict:
+    """Analyze the distribution of reversion labels."""
+
+    # Only look at rows with setups
+    setups = df[df['y_reversion'].notna()]
+
+    total_setups = len(setups)
+    if total_setups == 0:
+        return {
+            'total_setups': 0,
+            'win_rate': 0,
+            'wins': 0,
+            'losses': 0,
+            'long_setups': 0,
+            'long_win_rate': 0,
+            'short_setups': 0,
+            'short_win_rate': 0,
+        }
+
+    wins = (setups['y_reversion'] == 1).sum()
+    losses = (setups['y_reversion'] == 0).sum()
+
+    # By direction
+    long_setups = setups[setups['setup_direction'] == 1]
+    short_setups = setups[setups['setup_direction'] == -1]
+
+    return {
+        'total_setups': total_setups,
+        'win_rate': wins / total_setups if total_setups > 0 else 0,
+        'wins': int(wins),
+        'losses': int(losses),
+        'long_setups': len(long_setups),
+        'long_win_rate': float(long_setups['y_reversion'].mean()) if len(long_setups) > 0 else 0,
+        'short_setups': len(short_setups),
+        'short_win_rate': float(short_setups['y_reversion'].mean()) if len(short_setups) > 0 else 0,
+    }

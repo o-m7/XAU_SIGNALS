@@ -1,85 +1,52 @@
 """
-Model 4 Feature Engineering
-Only features legitimately derivable from OHLCV + quotes
+Feature Engineering for VWAP Mean Reversion Model
+
+Features designed for mean reversion strategy:
+- VWAP distance and velocity
+- Regime context (ADX, ATR percentile)
+- Momentum exhaustion signals
+- Session/spread context
 """
 import numpy as np
 import pandas as pd
 from typing import Optional
 
-# Try to import pandas_ta, fall back to manual calculation if not available
-try:
-    import pandas_ta as ta
-    HAS_PANDAS_TA = True
-except ImportError:
-    HAS_PANDAS_TA = False
+from .vwap import calculate_session_vwap, calculate_vwap_zscore
+from .regime import classify_regime, calculate_atr
 
 
-def compute_atr(high: pd.Series, low: pd.Series, close: pd.Series, length: int = 14) -> pd.Series:
-    """Compute Average True Range manually."""
-    tr1 = high - low
-    tr2 = (high - close.shift(1)).abs()
-    tr3 = (low - close.shift(1)).abs()
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    return tr.rolling(length, min_periods=1).mean()
-
-
-def compute_adx(high: pd.Series, low: pd.Series, close: pd.Series, length: int = 14) -> pd.DataFrame:
-    """Compute ADX manually."""
-    # True Range
-    tr1 = high - low
-    tr2 = (high - close.shift(1)).abs()
-    tr3 = (low - close.shift(1)).abs()
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-
-    # Directional Movement
-    up_move = high - high.shift(1)
-    down_move = low.shift(1) - low
-
-    plus_dm = pd.Series(
-        np.where((up_move > down_move) & (up_move > 0), up_move, 0),
-        index=high.index
-    )
-    minus_dm = pd.Series(
-        np.where((down_move > up_move) & (down_move > 0), down_move, 0),
-        index=high.index
-    )
-
-    # Smoothed indicators
-    atr = tr.ewm(span=length, adjust=False).mean()
-    plus_di = 100 * plus_dm.ewm(span=length, adjust=False).mean() / (atr + 1e-8)
-    minus_di = 100 * minus_dm.ewm(span=length, adjust=False).mean() / (atr + 1e-8)
-
-    # ADX
-    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di + 1e-8)
-    adx = dx.ewm(span=length, adjust=False).mean()
-
-    return pd.DataFrame({
-        f'ADX_{length}': adx,
-        f'DMP_{length}': plus_di,
-        f'DMN_{length}': minus_di
-    }, index=high.index)
+def calculate_rsi(close: pd.Series, length: int = 14) -> pd.Series:
+    """Calculate Relative Strength Index."""
+    delta = close.diff()
+    gain = delta.where(delta > 0, 0).rolling(length, min_periods=1).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(length, min_periods=1).mean()
+    rs = gain / (loss + 1e-8)
+    return 100 - (100 / (1 + rs))
 
 
 def build_model4_features(
     df_1t: pd.DataFrame,
     df_quotes: Optional[pd.DataFrame] = None,
-    timeframe: str = "5T"
+    timeframe: str = "5T",
+    session_hours: int = 8
 ) -> pd.DataFrame:
     """
-    Build features for Model 4 using only available data.
+    Build features for VWAP mean reversion model.
 
     Parameters:
     -----------
     df_1t : pd.DataFrame
         1-minute OHLCV data with DatetimeIndex
     df_quotes : pd.DataFrame, optional
-        Quote data with bid_price, ask_price, participant_timestamp
+        Quote data with bid_price, ask_price
     timeframe : str
-        Target timeframe for resampling
+        Target timeframe for resampling (default "5T")
+    session_hours : int
+        Rolling window for VWAP calculation (default 8)
 
     Returns:
     --------
-    pd.DataFrame with features
+    pd.DataFrame with all features
     """
 
     # Resample to target timeframe
@@ -91,85 +58,81 @@ def build_model4_features(
         'volume': 'sum'
     }).dropna()
 
-    # ========== VOLATILITY FEATURES ==========
+    # ===== ATR FIRST (needed for z-score) =====
+    df = calculate_atr(df, period=14)
+    df = calculate_atr(df, period=5)
 
-    # ATR at multiple lookbacks
-    if HAS_PANDAS_TA:
-        df['atr_14'] = ta.atr(df['high'], df['low'], df['close'], length=14)
-        df['atr_5'] = ta.atr(df['high'], df['low'], df['close'], length=5)
-    else:
-        df['atr_14'] = compute_atr(df['high'], df['low'], df['close'], length=14)
-        df['atr_5'] = compute_atr(df['high'], df['low'], df['close'], length=5)
+    # ===== VWAP FEATURES =====
+    df = calculate_session_vwap(df, session_hours=session_hours)
+    df = calculate_vwap_zscore(df)
 
-    df['atr_ratio'] = df['atr_5'] / df['atr_14'].replace(0, np.nan)
+    # ===== REGIME FEATURES =====
+    df = classify_regime(df)
 
-    # Range compression (NR4/NR7 detection)
-    df['range'] = df['high'] - df['low']
-    df['range_ma_20'] = df['range'].rolling(20).mean()
-    df['range_compression'] = df['range'] / df['range_ma_20'].replace(0, np.nan)
+    # ===== SESSION POSITION FEATURES =====
+    # Rolling session high/low
+    freq_minutes = 5 if timeframe == "5T" else int(timeframe.replace("T", ""))
+    session_bars = int(session_hours * 60 / freq_minutes)
 
-    # Realized volatility from higher-frequency data
-    # Compute on 1T data before resampling for accuracy
-    rv_1t = df_1t['close'].pct_change().rolling(60).std() * np.sqrt(252 * 1440)
-    df['realized_vol'] = rv_1t.resample(timeframe).last()
-    df['realized_vol_ma'] = df['realized_vol'].rolling(20).mean()
-    df['realized_vol_zscore'] = (
-        (df['realized_vol'] - df['realized_vol_ma']) /
-        df['realized_vol'].rolling(50).std().replace(0, np.nan)
-    )
-
-    # ========== PRICE POSITION FEATURES ==========
-
-    # Session high/low (rolling ~6.5 hours = 78 bars on 5T)
-    session_bars = 78 if timeframe == "5T" else 39 if timeframe == "10T" else 26
-    df['session_high'] = df['high'].rolling(session_bars).max()
-    df['session_low'] = df['low'].rolling(session_bars).min()
+    df['session_high'] = df['high'].rolling(session_bars, min_periods=1).max()
+    df['session_low'] = df['low'].rolling(session_bars, min_periods=1).min()
     df['session_range'] = df['session_high'] - df['session_low']
 
-    df['price_in_session_range'] = (
-        (df['close'] - df['session_low']) /
-        df['session_range'].replace(0, np.nan)
-    )
+    df['price_vs_session_high'] = (df['session_high'] - df['close']) / df['atr_14'].replace(0, np.nan)
+    df['price_vs_session_low'] = (df['close'] - df['session_low']) / df['atr_14'].replace(0, np.nan)
+    df['price_in_session_range'] = (df['close'] - df['session_low']) / df['session_range'].replace(0, np.nan)
 
-    df['dist_from_session_high_atr'] = (
-        (df['session_high'] - df['close']) / df['atr_14'].replace(0, np.nan)
-    )
-    df['dist_from_session_low_atr'] = (
-        (df['close'] - df['session_low']) / df['atr_14'].replace(0, np.nan)
-    )
+    # ===== MOMENTUM EXHAUSTION FEATURES =====
+    df['rsi_14'] = calculate_rsi(df['close'], length=14)
+    df['rsi_7'] = calculate_rsi(df['close'], length=7)
 
-    # ========== MOMENTUM FEATURES ==========
+    # RSI divergence: price making new high/low but RSI not confirming
+    df['price_high_5'] = df['high'].rolling(5, min_periods=1).max()
+    df['price_low_5'] = df['low'].rolling(5, min_periods=1).min()
+    df['rsi_high_5'] = df['rsi_14'].rolling(5, min_periods=1).max()
+    df['rsi_low_5'] = df['rsi_14'].rolling(5, min_periods=1).min()
 
-    df['returns_1bar'] = df['close'].pct_change(1)
-    df['returns_5bar'] = df['close'].pct_change(5)
-    df['returns_12bar'] = df['close'].pct_change(12)
+    # Bearish divergence: price at high, RSI below recent high
+    df['bearish_divergence'] = (
+        (df['close'] >= df['price_high_5'] * 0.999) &
+        (df['rsi_14'] < df['rsi_high_5'] - 5)
+    ).astype(int)
 
-    # Z-scored momentum
-    df['returns_5bar_zscore'] = (
-        (df['returns_5bar'] - df['returns_5bar'].rolling(50).mean()) /
-        df['returns_5bar'].rolling(50).std().replace(0, np.nan)
-    )
-    df['returns_12bar_zscore'] = (
-        (df['returns_12bar'] - df['returns_12bar'].rolling(50).mean()) /
-        df['returns_12bar'].rolling(50).std().replace(0, np.nan)
-    )
+    # Bullish divergence: price at low, RSI above recent low
+    df['bullish_divergence'] = (
+        (df['close'] <= df['price_low_5'] * 1.001) &
+        (df['rsi_14'] > df['rsi_low_5'] + 5)
+    ).astype(int)
 
-    # ========== SPREAD FEATURES (from quotes) ==========
+    df['rsi_divergence'] = df['bearish_divergence'] - df['bullish_divergence']
 
+    # Bars since price was at extreme z-score
+    df['at_upper_extreme'] = (df['vwap_zscore'] > 1.5).astype(int)
+    df['at_lower_extreme'] = (df['vwap_zscore'] < -1.5).astype(int)
+
+    # Count consecutive bars at extreme
+    df['bars_at_upper'] = df['at_upper_extreme'].groupby(
+        (~df['at_upper_extreme'].astype(bool)).cumsum()
+    ).cumsum()
+    df['bars_at_lower'] = df['at_lower_extreme'].groupby(
+        (~df['at_lower_extreme'].astype(bool)).cumsum()
+    ).cumsum()
+    df['bars_since_extreme'] = np.maximum(df['bars_at_upper'], df['bars_at_lower'])
+
+    # ===== SPREAD FEATURES =====
     if df_quotes is not None and len(df_quotes) > 0:
         quotes_resampled = df_quotes.resample(timeframe).agg({
             'ask_price': 'mean',
             'bid_price': 'mean',
         })
-        quotes_resampled['mid'] = (quotes_resampled['ask_price'] + quotes_resampled['bid_price']) / 2
         quotes_resampled['spread'] = quotes_resampled['ask_price'] - quotes_resampled['bid_price']
+        quotes_resampled['mid'] = (quotes_resampled['ask_price'] + quotes_resampled['bid_price']) / 2
         quotes_resampled['spread_pct'] = quotes_resampled['spread'] / quotes_resampled['mid'].replace(0, np.nan)
         quotes_resampled['spread_zscore'] = (
             (quotes_resampled['spread_pct'] - quotes_resampled['spread_pct'].rolling(60).mean()) /
             quotes_resampled['spread_pct'].rolling(60).std().replace(0, np.nan)
         )
 
-        # Quote arrival rate
         quote_counts = df_quotes.resample(timeframe).size()
         quotes_resampled['quote_rate'] = quote_counts
         quotes_resampled['quote_rate_zscore'] = (
@@ -179,75 +142,44 @@ def build_model4_features(
 
         df = df.join(quotes_resampled[['spread_pct', 'spread_zscore', 'quote_rate_zscore']], how='left')
     else:
-        # Placeholder if no quote data
-        df['spread_pct'] = 0.0001  # Assume 1 bp spread
+        df['spread_pct'] = 0.0001
         df['spread_zscore'] = 0.0
         df['quote_rate_zscore'] = 0.0
 
-    # ========== TREND FEATURES (for filtering, not prediction) ==========
-
-    df['ema_20'] = df['close'].ewm(span=20, adjust=False).mean()
-    df['ema_50'] = df['close'].ewm(span=50, adjust=False).mean()
-    df['trend'] = np.where(df['ema_20'] > df['ema_50'], 1, -1)
-
-    # ADX for trend strength
-    if HAS_PANDAS_TA:
-        adx_df = ta.adx(df['high'], df['low'], df['close'], length=14)
-        if adx_df is not None:
-            df['adx'] = adx_df['ADX_14']
-            df['plus_di'] = adx_df['DMP_14']
-            df['minus_di'] = adx_df['DMN_14']
-        else:
-            adx_df = compute_adx(df['high'], df['low'], df['close'], length=14)
-            df['adx'] = adx_df['ADX_14']
-            df['plus_di'] = adx_df['DMP_14']
-            df['minus_di'] = adx_df['DMN_14']
-    else:
-        adx_df = compute_adx(df['high'], df['low'], df['close'], length=14)
-        df['adx'] = adx_df['ADX_14']
-        df['plus_di'] = adx_df['DMP_14']
-        df['minus_di'] = adx_df['DMN_14']
-
-    # ========== TIME FEATURES ==========
-
+    # ===== TIME FEATURES =====
     df['hour'] = df.index.hour
-    df['minute'] = df.index.minute
-    df['day_of_week'] = df.index.dayofweek
-
-    # Cyclical encoding for hour
     df['hour_sin'] = np.sin(2 * np.pi * df['hour'] / 24)
     df['hour_cos'] = np.cos(2 * np.pi * df['hour'] / 24)
 
-    # Session flags
+    # Minutes since session open (London = 7:00 UTC)
+    df['minutes_since_london'] = (df['hour'] - 7) * 60 + df.index.minute
+    df['minutes_since_london'] = df['minutes_since_london'].clip(lower=0)
+
     df['is_london'] = ((df['hour'] >= 7) & (df['hour'] < 16)).astype(int)
     df['is_ny'] = ((df['hour'] >= 13) & (df['hour'] < 21)).astype(int)
-    df['is_overlap_session'] = ((df['hour'] >= 13) & (df['hour'] < 16)).astype(int)
-    df['is_asia'] = ((df['hour'] >= 0) & (df['hour'] < 7)).astype(int)
+    df['is_overlap'] = ((df['hour'] >= 13) & (df['hour'] < 16)).astype(int)
 
-    # ========== CLEANUP ==========
-
-    # Forward fill then drop remaining NaNs
-    df = df.ffill().dropna()
+    # ===== CLEANUP =====
+    df = df.replace([np.inf, -np.inf], np.nan).ffill().dropna()
 
     return df
 
 
 def get_model4_feature_columns() -> list:
-    """Return the feature columns used by Model 4."""
+    """Return feature columns for Model 4 VWAP Mean Reversion."""
     return [
-        'atr_ratio',
+        'vwap_zscore',
+        'vwap_zscore_velocity',
+        'price_vs_session_high',
+        'price_vs_session_low',
+        'adx',
+        'atr_percentile',
         'range_compression',
-        'realized_vol_zscore',
-        'price_in_session_range',
-        'dist_from_session_high_atr',
-        'dist_from_session_low_atr',
-        'returns_5bar_zscore',
-        'returns_12bar_zscore',
-        'spread_pct',
+        'rsi_14',
+        'rsi_divergence',
+        'bars_since_extreme',
         'spread_zscore',
         'quote_rate_zscore',
-        'adx',
         'hour_sin',
         'hour_cos',
-        'is_overlap_session',
     ]

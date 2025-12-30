@@ -1,12 +1,18 @@
 """
-Model 4 Signal Engine
-Trend Filter + ML Entry Timing
+Signal Engine for VWAP Mean Reversion
+
+Logic:
+1. Check if price is stretched from VWAP (setup exists)
+2. Check regime filter (not trending)
+3. Check session filter (London/NY)
+4. ML predicts probability of successful reversion
+5. If P(reversion) > threshold, generate signal
 """
 import numpy as np
 import pandas as pd
 import joblib
-from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
+from datetime import datetime
+from typing import Optional, Dict
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -25,44 +31,42 @@ class Signal(Enum):
 class SignalResult:
     signal: Signal
     confidence: float
-    trend: int
-    adx: float
+    vwap_zscore: float
+    target_price: float
+    stop_price: float
     reason: str
+    adx: float = 0.0
     timestamp: datetime = None
     features: Dict[str, float] = field(default_factory=dict)
 
 
 class Model4SignalEngine:
     """
-    Signal engine for Model 4.
+    Mean reversion signal engine.
 
     Logic:
-    1. Trend filter determines direction (EMA crossover + ADX)
-    2. ML model determines entry quality
-    3. Execution filters validate conditions
+    1. Check if price is stretched from VWAP (setup exists)
+    2. Check regime filter (not trending)
+    3. Check session filter (London/NY)
+    4. ML predicts probability of successful reversion
+    5. If P(reversion) > threshold, generate signal
     """
 
-    def __init__(
-        self,
-        model_path: str = "models/model4_lgbm.joblib",
-        config: Model4Config = None
-    ):
+    def __init__(self, model_path: str, config: Model4Config = None):
         self.config = config or Model4Config()
         self._load_model(model_path)
+        self.last_signal_ts = None
 
-        # State tracking
-        self.last_signal_ts: Optional[datetime] = None
-        self.last_signal: Optional[Signal] = None
+    def _load_model(self, path: str):
+        if not Path(path).exists():
+            raise FileNotFoundError(f"Model file not found: {path}")
 
-    def _load_model(self, model_path: str) -> None:
-        """Load trained model."""
-        if not Path(model_path).exists():
-            raise FileNotFoundError(f"Model file not found: {model_path}")
-
-        artifact = joblib.load(model_path)
+        artifact = joblib.load(path)
         self.model = artifact['model']
         self.feature_columns = artifact['feature_columns']
-        print(f"Loaded Model 4 from {model_path}")
+        self.base_win_rate = artifact.get('base_win_rate', 0.5)
+        print(f"Loaded Model 4 (VWAP Mean Reversion)")
+        print(f"  Base WR: {self.base_win_rate:.1%}")
         print(f"  Features: {len(self.feature_columns)}")
 
     def generate_signal(
@@ -70,38 +74,44 @@ class Model4SignalEngine:
         features: pd.Series,
         timestamp: datetime = None
     ) -> SignalResult:
-        """
-        Generate trading signal.
-
-        Parameters:
-        -----------
-        features : pd.Series
-            Current bar features (must include all required columns)
-        timestamp : datetime
-            Current timestamp for cooldown tracking
-
-        Returns:
-        --------
-        SignalResult with signal, confidence, and metadata
-        """
+        """Generate trading signal from current features."""
 
         timestamp = timestamp or datetime.now()
 
-        # ===== 1. TREND FILTER =====
-        trend = features.get('trend', 0)
-        adx = features.get('adx', 0)
+        vwap_zscore = features.get('vwap_zscore', 0)
+        adx = features.get('adx', 50)
+        atr = features.get('atr_14', 1)
+        vwap = features.get('vwap', features.get('close', 0))
+        close = features.get('close', 0)
+        regime = features.get('regime_tradeable', 0)
 
-        if adx < self.config.min_adx:
+        # 1. Setup check - is price stretched?
+        if abs(vwap_zscore) < self.config.entry_zscore_threshold:
             return SignalResult(
                 signal=Signal.NONE,
-                confidence=0.0,
-                trend=trend,
+                confidence=0,
+                vwap_zscore=vwap_zscore,
+                target_price=0,
+                stop_price=0,
                 adx=adx,
-                reason=f"ADX {adx:.1f} < {self.config.min_adx} (choppy market)",
+                reason=f"No setup: |z|={abs(vwap_zscore):.2f} < {self.config.entry_zscore_threshold}",
                 timestamp=timestamp
             )
 
-        # ===== 2. SESSION FILTER =====
+        # 2. Regime check (ADX < max for mean reversion)
+        if adx > self.config.max_adx:
+            return SignalResult(
+                signal=Signal.NONE,
+                confidence=0,
+                vwap_zscore=vwap_zscore,
+                target_price=0,
+                stop_price=0,
+                adx=adx,
+                reason=f"Trending: ADX={adx:.1f} > {self.config.max_adx}",
+                timestamp=timestamp
+            )
+
+        # 3. Session check
         hour = features.get('hour', timestamp.hour if hasattr(timestamp, 'hour') else 12)
         is_london = self.config.london_start <= hour < self.config.london_end
         is_ny = self.config.ny_start <= hour < self.config.ny_end
@@ -109,81 +119,95 @@ class Model4SignalEngine:
         if not (is_london or is_ny):
             return SignalResult(
                 signal=Signal.NONE,
-                confidence=0.0,
-                trend=trend,
+                confidence=0,
+                vwap_zscore=vwap_zscore,
+                target_price=0,
+                stop_price=0,
                 adx=adx,
-                reason=f"Outside London/NY session (hour={hour})",
+                reason=f"Outside session: hour={hour}",
                 timestamp=timestamp
             )
 
-        # ===== 3. SPREAD FILTER =====
-        spread_pct = features.get('spread_pct', 0)
-        if spread_pct > self.config.max_spread_pct:
+        # 4. Spread check
+        spread = features.get('spread_pct', 0)
+        if spread > self.config.max_spread_pct:
             return SignalResult(
                 signal=Signal.NONE,
-                confidence=0.0,
-                trend=trend,
+                confidence=0,
+                vwap_zscore=vwap_zscore,
+                target_price=0,
+                stop_price=0,
                 adx=adx,
-                reason=f"Spread {spread_pct*10000:.1f}bps > max {self.config.max_spread_pct*10000:.1f}bps",
+                reason=f"Spread too wide: {spread*10000:.1f}bps",
                 timestamp=timestamp
             )
 
-        # ===== 4. COOLDOWN CHECK =====
+        # 5. Cooldown
         if self.last_signal_ts:
-            # Cooldown in seconds (bars * timeframe)
-            timeframe_seconds = 300 if self.config.base_timeframe == "5T" else 900
-            cooldown_seconds = self.config.cooldown_bars * timeframe_seconds
-
+            cooldown_sec = self.config.cooldown_bars * 300  # Assuming 5T timeframe
             elapsed = (timestamp - self.last_signal_ts).total_seconds()
-            if elapsed < cooldown_seconds:
-                remaining = cooldown_seconds - elapsed
+            if elapsed < cooldown_sec:
                 return SignalResult(
                     signal=Signal.NONE,
-                    confidence=0.0,
-                    trend=trend,
+                    confidence=0,
+                    vwap_zscore=vwap_zscore,
+                    target_price=0,
+                    stop_price=0,
                     adx=adx,
-                    reason=f"Cooldown: {remaining/60:.1f} min remaining",
+                    reason=f"Cooldown: {(cooldown_sec-elapsed)/60:.0f}min left",
                     timestamp=timestamp
                 )
 
-        # ===== 5. MODEL PREDICTION =====
+        # 6. ML prediction
         try:
-            # Keep as DataFrame to preserve feature names
             X = pd.DataFrame([features[self.feature_columns].values], columns=self.feature_columns)
-            prob_good_entry = self.model.predict_proba(X)[0, 1]
+            prob_reversion = self.model.predict_proba(X)[0, 1]
         except Exception as e:
             return SignalResult(
                 signal=Signal.NONE,
-                confidence=0.0,
-                trend=trend,
+                confidence=0,
+                vwap_zscore=vwap_zscore,
+                target_price=0,
+                stop_price=0,
                 adx=adx,
-                reason=f"Model error: {str(e)}",
+                reason=f"Model error: {e}",
                 timestamp=timestamp
             )
 
-        if prob_good_entry < self.config.model_threshold:
+        if prob_reversion < self.config.model_threshold:
             return SignalResult(
                 signal=Signal.NONE,
-                confidence=prob_good_entry,
-                trend=trend,
+                confidence=prob_reversion,
+                vwap_zscore=vwap_zscore,
+                target_price=0,
+                stop_price=0,
                 adx=adx,
-                reason=f"Low confidence: {prob_good_entry:.2f} < {self.config.model_threshold}",
+                reason=f"Low confidence: {prob_reversion:.2f} < {self.config.model_threshold}",
                 timestamp=timestamp
             )
 
-        # ===== 6. GENERATE SIGNAL IN TREND DIRECTION =====
-        signal = Signal.LONG if trend == 1 else Signal.SHORT
+        # 7. Generate signal (opposite direction to stretch)
+        if vwap_zscore > 0:
+            # Price above VWAP -> SHORT
+            signal = Signal.SHORT
+            target = vwap
+            stop = close + (self.config.stop_atr_mult * atr)
+        else:
+            # Price below VWAP -> LONG
+            signal = Signal.LONG
+            target = vwap
+            stop = close - (self.config.stop_atr_mult * atr)
 
-        # Update state
         self.last_signal_ts = timestamp
-        self.last_signal = signal
 
         return SignalResult(
             signal=signal,
-            confidence=prob_good_entry,
-            trend=trend,
+            confidence=prob_reversion,
+            vwap_zscore=vwap_zscore,
+            target_price=target,
+            stop_price=stop,
             adx=adx,
-            reason="Model confirmed trend entry",
+            reason=f"Setup confirmed: z={vwap_zscore:.2f}, P={prob_reversion:.2f}",
             timestamp=timestamp,
             features={col: features.get(col, np.nan) for col in self.feature_columns[:5]}
         )
@@ -191,4 +215,3 @@ class Model4SignalEngine:
     def reset_state(self) -> None:
         """Reset internal state (for backtesting)."""
         self.last_signal_ts = None
-        self.last_signal = None

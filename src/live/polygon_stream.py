@@ -27,7 +27,7 @@ import requests
 
 try:
     from massive import WebSocketClient
-    from massive.websocket.models import WebSocketMessage, Feed, Market
+    from massive.websocket.models import WebSocketMessage, Market
     MASSIVE_AVAILABLE = True
 except ImportError:
     MASSIVE_AVAILABLE = False
@@ -211,8 +211,24 @@ class PolygonStream:
 
     def _handle_messages(self, msgs: List[WebSocketMessage]):
         """Process incoming messages from Massive client."""
+        # Log that we received messages (visible at INFO level)
+        if msgs:
+            logger.info(f"Received {len(msgs)} message(s) from WebSocket")
+
         for msg in msgs:
+            # Debug: log all incoming messages to see what we're getting
+            logger.info(f"Raw message: {msg}")
+            logger.debug(f"Message type: {type(msg)}, attrs: {dir(msg)}")
+
             ev = getattr(msg, 'ev', None)
+
+            # Also try 'event_type' or check if msg is a dict
+            if ev is None:
+                ev = getattr(msg, 'event_type', None)
+            if ev is None and hasattr(msg, '__getitem__'):
+                ev = msg.get('ev') if isinstance(msg, dict) else None
+
+            logger.info(f"Event type extracted: {ev}")
 
             if ev == "C":
                 self._handle_quote(msg)
@@ -220,8 +236,14 @@ class PolygonStream:
                 self._handle_aggregate(msg, "aggs_minute")
             elif ev == "CAS":
                 self._handle_aggregate(msg, "aggs_second")
-            # Status messages (auth_success, subscribed, etc.) are handled
-            # internally by the Massive library
+            elif ev == "status":
+                # Log status messages
+                status = getattr(msg, 'status', None) or (msg.get('status') if isinstance(msg, dict) else None)
+                message = getattr(msg, 'message', None) or (msg.get('message') if isinstance(msg, dict) else None)
+                logger.info(f"Status message: {status} - {message}")
+            else:
+                # Log unknown event types
+                logger.debug(f"Unknown event type: {ev}, message: {msg}")
 
     def _handle_quote(self, msg: WebSocketMessage):
         """Convert quote message to StreamEvent."""
@@ -300,7 +322,6 @@ class PolygonStream:
         # Create Massive WebSocket client
         self._client = WebSocketClient(
             api_key=self.api_key,
-            feed=Feed.RealTime,
             market=Market.Forex,
             subscriptions=self._subscribed_channels,
         )
@@ -321,10 +342,12 @@ class PolygonStream:
     def _run(self):
         """Run the Massive client (blocking)."""
         try:
+            logger.info("Starting Massive WebSocket client.run()...")
             self._client.run(handle_msg=self._handle_messages)
+            logger.info("Massive client.run() returned normally")
         except Exception as e:
             if self._running:
-                logger.error(f"Stream error: {e}")
+                logger.error(f"Stream error: {e}", exc_info=True)
                 self._reconnect_count += 1
 
     def stop(self):
@@ -453,7 +476,6 @@ class PolygonStream:
         try:
             self._client = WebSocketClient(
                 api_key=self.api_key,
-                feed=Feed.RealTime,
                 market=Market.Forex,
                 subscriptions=self._subscribed_channels,
             )

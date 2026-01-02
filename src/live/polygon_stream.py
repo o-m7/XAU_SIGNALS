@@ -211,24 +211,9 @@ class PolygonStream:
 
     def _handle_messages(self, msgs: List[WebSocketMessage]):
         """Process incoming messages from Massive client."""
-        # Log that we received messages (visible at INFO level)
-        if msgs:
-            logger.info(f"Received {len(msgs)} message(s) from WebSocket")
-
         for msg in msgs:
-            # Debug: log all incoming messages to see what we're getting
-            logger.info(f"Raw message: {msg}")
-            logger.debug(f"Message type: {type(msg)}, attrs: {dir(msg)}")
-
-            ev = getattr(msg, 'ev', None)
-
-            # Also try 'event_type' or check if msg is a dict
-            if ev is None:
-                ev = getattr(msg, 'event_type', None)
-            if ev is None and hasattr(msg, '__getitem__'):
-                ev = msg.get('ev') if isinstance(msg, dict) else None
-
-            logger.info(f"Event type extracted: {ev}")
+            # Get event type - Massive SDK uses 'event_type' not 'ev'
+            ev = getattr(msg, 'event_type', None) or getattr(msg, 'ev', None)
 
             if ev == "C":
                 self._handle_quote(msg)
@@ -237,22 +222,20 @@ class PolygonStream:
             elif ev == "CAS":
                 self._handle_aggregate(msg, "aggs_second")
             elif ev == "status":
-                # Log status messages
-                status = getattr(msg, 'status', None) or (msg.get('status') if isinstance(msg, dict) else None)
-                message = getattr(msg, 'message', None) or (msg.get('message') if isinstance(msg, dict) else None)
-                logger.info(f"Status message: {status} - {message}")
-            else:
-                # Log unknown event types
-                logger.debug(f"Unknown event type: {ev}, message: {msg}")
+                status = getattr(msg, 'status', None)
+                message = getattr(msg, 'message', None)
+                logger.info(f"Status: {status} - {message}")
 
     def _handle_quote(self, msg: WebSocketMessage):
         """Convert quote message to StreamEvent."""
         try:
-            ts_ms = getattr(msg, 't', 0)
+            # Massive SDK uses 'timestamp' not 't'
+            ts_ms = getattr(msg, 'timestamp', 0) or getattr(msg, 't', 0)
             timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc) if ts_ms else datetime.now(timezone.utc)
 
-            bid = getattr(msg, 'b', None) or getattr(msg, 'bp', None)
-            ask = getattr(msg, 'a', None) or getattr(msg, 'ap', None)
+            # Massive SDK uses 'bid_price'/'ask_price' not 'b'/'a'
+            bid = getattr(msg, 'bid_price', None) or getattr(msg, 'b', None) or getattr(msg, 'bp', None)
+            ask = getattr(msg, 'ask_price', None) or getattr(msg, 'a', None) or getattr(msg, 'ap', None)
 
             if bid is None or ask is None:
                 return  # Skip invalid quotes silently
@@ -278,18 +261,22 @@ class PolygonStream:
     def _handle_aggregate(self, msg: WebSocketMessage, source: str):
         """Convert aggregate message to StreamEvent."""
         try:
-            # Use end timestamp (e) or start timestamp (s)
-            ts_ms = getattr(msg, 'e', 0) or getattr(msg, 's', 0)
+            # Massive SDK uses 'end_timestamp'/'start_timestamp' not 'e'/'s'
+            ts_ms = (getattr(msg, 'end_timestamp', 0) or
+                     getattr(msg, 'start_timestamp', 0) or
+                     getattr(msg, 'e', 0) or
+                     getattr(msg, 's', 0))
             timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc) if ts_ms else datetime.now(timezone.utc)
 
+            # Massive SDK uses full names: 'open', 'high', 'low', 'close', 'volume'
             event = StreamEvent(
                 type="bar",
                 timestamp=timestamp,
-                open=getattr(msg, 'o', None),
-                high=getattr(msg, 'h', None),
-                low=getattr(msg, 'l', None),
-                close=getattr(msg, 'c', None),
-                volume=getattr(msg, 'v', None),
+                open=getattr(msg, 'open', None) or getattr(msg, 'o', None),
+                high=getattr(msg, 'high', None) or getattr(msg, 'h', None),
+                low=getattr(msg, 'low', None) or getattr(msg, 'l', None),
+                close=getattr(msg, 'close', None) or getattr(msg, 'c', None),
+                volume=getattr(msg, 'volume', None) or getattr(msg, 'v', None),
                 source=source,
             )
 

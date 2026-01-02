@@ -458,24 +458,7 @@ class LiveRunner:
         # During warmup - no signals, no Telegram
         if self.feature_buffer.is_warming_up():
             return
-        
-        # Log price regularly with P(up) (every 10 events to show activity without spam)
-        if not hasattr(self, '_price_log_count'):
-            self._price_log_count = 0
-        self._price_log_count += 1
-        if self._price_log_count % 10 == 0 and self._current_price and feature_row is not None:
-            # Generate signals to get P(up) for logging
-            try:
-                results = self.signal_engine.generate_signals(feature_row, self._current_price)
-                proba_strs = []
-                for model_name, result in results.items():
-                    proba_up = result.get("proba_up", 0.0)
-                    proba_strs.append(f"{model_name}:{proba_up:.3f}")
-                logger.info(f"💰 Price: {self._current_price:.2f} | {' | '.join(proba_strs)} | Source: {event.get('source', 'unknown')}")
-            except Exception as e:
-                logger.debug(f"Could not compute P(up) for price log: {e}")
-                logger.info(f"💰 Price: {self._current_price:.2f} | Source: {event.get('source', 'unknown')}")
-        
+
         # Warmup just completed - send notification
         if not self._warmup_notified:
             self._warmup_notified = True
@@ -510,6 +493,12 @@ class LiveRunner:
             timestamp,
             current_price=self._current_price
         )
+
+        # Log P(up) summary for all models on each bar
+        price_str = f"{self._current_price:.2f}" if self._current_price else "N/A"
+        proba_strs = [f"{result.get('model_display', name)}:{result.get('proba_up', 0.0):.3f}"
+                      for name, result in all_results.items()]
+        logger.info(f"💰 Price: {price_str} | {' | '.join(proba_strs)}")
 
         # Process each model's signal independently
         for model_name, result in all_results.items():

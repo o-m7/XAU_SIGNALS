@@ -104,16 +104,6 @@ def main():
         os.environ['TELEGRAM_ENABLED'] = '0'
         print()
 
-    # Set multi-model mode environment variable
-    os.environ['MULTI_MODEL_MODE'] = '1'
-
-    # Serialize model configs to environment
-    model_configs_str = ";".join([
-        f"{m.name},{m.model_path},{m.threshold_long},{m.threshold_short}"
-        for m in models
-    ])
-    os.environ['MODEL_CONFIGS'] = model_configs_str
-
     print("=" * 80)
     print("STARTING LIVE RUNNER")
     print("=" * 80)
@@ -121,14 +111,23 @@ def main():
 
     # Run the live engine
     try:
-        # Import and run with multi-model configuration
-        sys.argv = [
-            'live_runner',
-            '--multi-model',
-            '--backfill' if args.backfill else ''
-        ]
+        # Use the primary model path and thresholds from config
+        primary_model = models[0]  # model3_cmf_macd_v4
 
-        # The live_runner will read MODEL_CONFIGS from environment
+        # Import and run with proper arguments
+        sys.argv = ['live_runner']
+
+        if args.backfill:
+            sys.argv.append('--backfill')
+
+        sys.argv.extend([
+            '--model_path', str(primary_model.model_path),
+            '--threshold_long', str(primary_model.threshold_long),
+            '--threshold_short', str(primary_model.threshold_short),
+        ])
+
+        # The live_runner will use its built-in multi-model system
+        # which loads model1 and model3 automatically
         run_live_engine()
 
     except KeyboardInterrupt:

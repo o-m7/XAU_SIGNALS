@@ -111,24 +111,23 @@ def main():
 
     # Run the live engine
     try:
-        # Use the primary model path and thresholds from config
-        primary_model = models[0]  # model3_cmf_macd_v4
+        # Load configuration
+        from src.live.live_runner import load_config, LiveRunner
 
-        # Import and run with proper arguments
-        sys.argv = ['live_runner']
+        config = load_config()
 
-        if args.backfill:
-            sys.argv.append('--backfill')
+        # Create LiveRunner with production models
+        logger.info("Initializing LiveRunner with production models...")
+        runner = LiveRunner(
+            config=config,
+            backfill=args.backfill,
+            backfill_bars=500,
+            production_models=models,  # Pass all 3 production models
+            model_version="v3"  # Use v3 for multi-model system
+        )
 
-        sys.argv.extend([
-            '--model_path', str(primary_model.model_path),
-            '--threshold_long', str(primary_model.threshold_long),
-            '--threshold_short', str(primary_model.threshold_short),
-        ])
-
-        # The live_runner will use its built-in multi-model system
-        # which loads model1 and model3 automatically
-        run_live_engine()
+        # Start the runner
+        runner.start()
 
     except KeyboardInterrupt:
         logger.info("\n👋 Shutting down gracefully...")

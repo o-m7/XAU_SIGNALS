@@ -216,6 +216,7 @@ class LiveRunner:
         backfill: bool = True,
         backfill_bars: int = 500,
         model_version: str = "v3",  # "v3" for legacy, "v4" for trend+timing
+        production_models: Optional[list] = None,  # List of ModelConfig for production deployment
     ):
         self.config = config
         self.model_path = model_path
@@ -272,26 +273,32 @@ class LiveRunner:
             self.model4_engine = Model4SignalEngine(model_path, Model4Config())
             self.signal_engine = None  # Not used for Model 4
         else:
-            # Legacy: Multi-model signal engine (Model #1 and Model #3)
-            model1_path = model_path  # Model #1
-            model3_path = PROJECT_ROOT / "models" / "model3_cmf_macd" / "model3_cmf_macd.joblib"
+            # Multi-model signal engine
+            if production_models:
+                # Production deployment: Use models from configuration
+                logger.info(f"Loading {len(production_models)} production models")
+                models = production_models
+            else:
+                # Legacy: Multi-model signal engine (Model #1 and Model #3)
+                model1_path = model_path  # Model #1
+                model3_path = PROJECT_ROOT / "models" / "model3_cmf_macd" / "model3_cmf_macd.joblib"
 
-            models = [
-                ModelConfig(
-                    name="model1",
-                    model_path=str(model1_path),
-                    threshold_long=threshold_long,
-                    threshold_short=threshold_short,
-                    enabled=True
-                ),
-                ModelConfig(
-                    name="model3",
-                    model_path=str(model3_path),
-                    threshold_long=0.60,  # Optimal from backtest (45.9% L / 54.1% S)
-                    threshold_short=0.26,  # Optimal from backtest (Sharpe 2.76)
-                    enabled=model3_path.exists()  # Only enable if model exists
-                ),
-            ]
+                models = [
+                    ModelConfig(
+                        name="model1",
+                        model_path=str(model1_path),
+                        threshold_long=threshold_long,
+                        threshold_short=threshold_short,
+                        enabled=True
+                    ),
+                    ModelConfig(
+                        name="model3",
+                        model_path=str(model3_path),
+                        threshold_long=0.60,  # Optimal from backtest (45.9% L / 54.1% S)
+                        threshold_short=0.26,  # Optimal from backtest (Sharpe 2.76)
+                        enabled=model3_path.exists()  # Only enable if model exists
+                    ),
+                ]
 
             self.signal_engine = MultiModelSignalEngine(models)
         

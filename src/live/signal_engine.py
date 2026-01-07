@@ -242,7 +242,7 @@ class SignalEngine:
                     required_cols = ['ATR_14', 'spread']
                 else:
                     logger.warning(f"Volatility filter: Missing required columns {required_cols}, allowing trade")
-                    return True
+                return True
             
             current_bar = feature_row.iloc[0]
             atr_value = current_bar['ATR_14']
@@ -286,7 +286,7 @@ class SignalEngine:
                         f"spread={spread_value:.2f} > max_spread={max_spread} "
                         f"(Trading costs too high for profitable trading)"
                     )
-                    return False  # Too expensive
+                return False  # Too expensive
             
             # Both checks passed
             logger.debug(

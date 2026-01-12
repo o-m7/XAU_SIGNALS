@@ -140,13 +140,19 @@ class SignalEngine:
             logger.error(f"Prediction error: {e}")
             return self._make_result(Signal.FLAT, 0.5, timestamp, None, None, None, str(e))
         
-        # Determine signal
+        # Determine signal with detailed logging
         if proba_up >= self.threshold_long:
             signal = Signal.LONG
+            logger.debug(f"✅ LONG signal: {proba_up:.4f} >= {self.threshold_long}")
         elif proba_up <= self.threshold_short:
             signal = Signal.SHORT
+            logger.debug(f"✅ SHORT signal: {proba_up:.4f} <= {self.threshold_short}")
         else:
             signal = Signal.FLAT
+            logger.debug(
+                f"⚪ FLAT signal: {proba_up:.4f} in dead zone "
+                f"({self.threshold_short:.2f} < P < {self.threshold_long:.2f})"
+            )
         
         # =====================================================================
         # WICK FILTER: Prevent shorting bullish absorption wicks
@@ -368,49 +374,63 @@ class SignalEngine:
     ) -> tuple:
         """
         Calculate Take Profit and Stop Loss levels.
-        
+
         MATCHES TRAINING FORMULA (triple-barrier from features_complete.py):
             Upper barrier: price * (1 + TP_mult * ATR_14 / price)
             Lower barrier: price * (1 - SL_mult * ATR_14 / price)
-        
-        Default multipliers: TP_mult = 1.0, SL_mult = 1.0
-        This means: TP = price + ATR, SL = price - ATR (for LONG)
-        
+
+        Simplified: TP = price + (TP_mult * ATR), SL = price - (SL_mult * ATR)
+
         Args:
             signal: LONG or SHORT
             price: Current price
             feature_row: Features (must contain ATR_14)
             proba_up: Model confidence
-            
+
         Returns:
             (tp_price, sl_price)
         """
         # =====================================================================
-        # FIXED TP/SL WITH 1:1.5 RISK:REWARD RATIO
-        # 
-        # Account: $25,000
-        # Risk: 1% = $250 per trade
-        # Reward: 1.5x = $375 per trade
+        # DYNAMIC ATR-BASED TP/SL WITH 1:1.5 RISK:REWARD RATIO
         #
-        # For gold (XAUUSD) intraday trading:
-        # SL distance: $15 (reasonable for intraday)
-        # TP distance: $22.50 (1.5x SL for 1:1.5 R:R)
+        # Uses ATR_14 to dynamically adjust to current market volatility.
+        # More volatile = wider stops, less volatile = tighter stops.
+        #
+        # Multipliers:
+        # - SL: 1.0 ATR (stop loss at 1 ATR from entry)
+        # - TP: 1.5 ATR (take profit at 1.5 ATR from entry)
+        # This gives a 1:1.5 risk:reward ratio.
         # =====================================================================
-        
-        # Fixed distances for XAUUSD (in dollars)
-        SL_DISTANCE = 15.0   # Stop loss: $15 from entry
-        TP_DISTANCE = 22.50  # Take profit: $22.50 from entry (1.5x SL)
-        
+
+        # ATR multipliers for TP/SL
+        SL_MULT = 1.0  # Stop loss at 1.0 ATR
+        TP_MULT = 1.5  # Take profit at 1.5 ATR (1:1.5 R:R)
+
+        # Get ATR from features
+        atr = feature_row.get('ATR_14', feature_row.get('atr_14', None))
+
+        if atr is None:
+            logger.warning("⚠️ ATR_14 not found in features, using default 5.0")
+            atr = 5.0
+
+        # Handle Series
+        if isinstance(atr, pd.Series):
+            atr = atr.iloc[0]
+
+        # Calculate TP/SL distances
+        sl_distance = SL_MULT * atr
+        tp_distance = TP_MULT * atr
+
         # Calculate TP/SL prices
         if signal == Signal.LONG:
             # Long: TP above, SL below
-            tp_price = price + TP_DISTANCE
-            sl_price = price - SL_DISTANCE
+            tp_price = price + tp_distance
+            sl_price = price - sl_distance
         else:  # SHORT
             # Short: TP below, SL above
-            tp_price = price - TP_DISTANCE
-            sl_price = price + SL_DISTANCE
-        
+            tp_price = price - tp_distance
+            sl_price = price + sl_distance
+
         return round(tp_price, 2), round(sl_price, 2)
     
     def _make_result(

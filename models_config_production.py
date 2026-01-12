@@ -52,8 +52,8 @@ PRODUCTION_MODELS = [
     ModelConfig(
         name="model3_cmf_macd_v4",
         model_path=str(PROJECT_ROOT / "models" / "model3_cmf_macd_v4.joblib"),
-        threshold_long=0.70,   # High confidence for longs
-        threshold_short=0.30,  # High confidence for shorts
+        threshold_long=0.80,   # VERY strict to prevent false shorts (was 0.70)
+        threshold_short=0.20,  # VERY strict to prevent over-firing (was 0.30)
         enabled=True
     ),
 
@@ -81,8 +81,8 @@ PRODUCTION_MODELS = [
     ModelConfig(
         name="model1_high_conf",
         model_path=str(PROJECT_ROOT / "models" / "model1_high_conf.joblib"),
-        threshold_long=0.65,   # High confidence
-        threshold_short=0.35,  # High confidence
+        threshold_long=0.55,   # Relaxed to allow signals (was 0.65)
+        threshold_short=0.45,  # Relaxed to allow signals (was 0.35)
         enabled=True
     ),
 
@@ -112,9 +112,37 @@ PRODUCTION_MODELS = [
     ModelConfig(
         name="model_rf_v4",
         model_path=str(PROJECT_ROOT / "models" / "model_rf_v4.joblib"),
-        threshold_long=0.65,   # High confidence
-        threshold_short=0.35,  # High confidence
+        threshold_long=0.55,   # Relaxed to allow signals (was 0.65)
+        threshold_short=0.45,  # Relaxed to allow signals (was 0.35)
         enabled=True
+    ),
+
+    # =========================================================================
+    # EXPERIMENTAL MODEL: model4_news_gated_5m (LONG-ONLY)
+    # =========================================================================
+    # Performance (Dec 2025 validation):
+    #   - Win Rate: 10.7% on labels (⚠️ below target)
+    #   - Profit Factor: 1.05 (⚠️ below target 1.6)
+    #   - Trades/Day: Est. ~50-100 (5min bars, news-gated)
+    #
+    # Status: EXPERIMENTAL - Monitor closely in production
+    #
+    # Strategy:
+    #   - 5-minute bars (vs. 15min for other models)
+    #   - Long-only (no shorts)
+    #   - News gate: DXY/VIX/event filtering via XAUUSD volatility
+    #   - XGBoost: 5 fast features (RSI, MACD, BB, ATR, Volume)
+    #   - Max hold: 30 minutes (auto-exit)
+    #   - Triple-barrier labels: 0.4% up / 0.3% down / 20 bars
+    #
+    # Deployment: DISABLED by default - enable with caution
+    # =========================================================================
+    ModelConfig(
+        name="model4_news_gated_5m",
+        model_path=str(PROJECT_ROOT / "models" / "model4_news_gated_5m.joblib"),
+        threshold_long=0.40,   # Lower threshold (long-only, experimental)
+        threshold_short=1.00,  # Impossible (long-only)
+        enabled=False  # DISABLED - enable after monitoring
     ),
 ]
 

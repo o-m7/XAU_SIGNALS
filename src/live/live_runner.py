@@ -378,14 +378,17 @@ class LiveRunner:
             
             # Send ready notification
             if self.feature_buffer.is_ready():
-                model_names = ", ".join([m.name for m in self.signal_engine.models if m.enabled])
+                model_info_lines = []
+                for m in self.signal_engine.models:
+                    if m.enabled:
+                        model_info_lines.append(f"  • {m.name}: L≥{m.threshold_long}, S≤{m.threshold_short}")
+                model_info = "\n".join(model_info_lines)
+
                 self.telegram_bot.send_alert(
                     "🚀 Signal Engine Ready",
                     f"Symbol: {self.resolver.display_name()}\n"
                     f"Mode: REST backfill + {self.ws_mode.value}\n"
-                    f"Models: {model_names}\n"
-                    f"Model #1 Thresholds: L≥{self.threshold_long}, S≤{self.threshold_short}\n"
-                    f"Model #3 Thresholds: L≥0.70, S≤0.35\n"
+                    f"Models:\n{model_info}\n"
                     f"Risk: {self.risk_pct*100:.2f}%\n"
                     f"Bars loaded: {self.feature_buffer.get_bar_count()}"
                 )
@@ -470,14 +473,18 @@ class LiveRunner:
         if not self._warmup_notified:
             self._warmup_notified = True
             logger.info("🚀 WARMUP COMPLETE - Starting signal generation")
-            model_names = ", ".join([m.name for m in self.signal_engine.models if m.enabled])
+
+            model_info_lines = []
+            for m in self.signal_engine.models:
+                if m.enabled:
+                    model_info_lines.append(f"  • {m.name}: L≥{m.threshold_long}, S≤{m.threshold_short}")
+            model_info = "\n".join(model_info_lines)
+
             self.telegram_bot.send_alert(
                 "🚀 Signal Engine Ready (Warmup Complete)",
                 f"Symbol: {self.resolver.display_name()}\n"
                 f"Mode: {self.ws_mode.value}\n"
-                f"Models: {model_names}\n"
-                f"Model #1 Thresholds: L≥{self.threshold_long}, S≤{self.threshold_short}\n"
-                f"Model #3 Thresholds: L≥0.70, S≤0.35\n"
+                f"Models:\n{model_info}\n"
                 f"Risk: {self.risk_pct*100:.2f}%\n"
                 f"Bars collected: {self.feature_buffer.get_bar_count()}"
             )

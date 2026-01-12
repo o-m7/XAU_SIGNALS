@@ -292,13 +292,19 @@ class SignalEngine:
                         f"spread={spread_value:.2f} > max_spread={max_spread} "
                         f"(Trading costs too high for profitable trading)"
                     )
-                return False  # Too expensive
-            
+                    return False  # Too expensive
+
             # Both checks passed
-            logger.debug(
-                f"✓ Volatility filter PASSED: ATR_14={atr_value:.2f} >= {min_atr}, "
-                f"spread={spread_value:.2f} <= {max_spread}"
-            )
+            if use_percentage:
+                logger.debug(
+                    f"✓ Volatility filter PASSED: ATR_14={atr_value:.2f} >= {min_atr}, "
+                    f"spread_pct={spread_value:.6f} <= {max_spread_pct:.6f}"
+                )
+            else:
+                logger.debug(
+                    f"✓ Volatility filter PASSED: ATR_14={atr_value:.2f} >= {min_atr}, "
+                    f"spread={spread_value:.2f} <= {max_spread}"
+                )
             return True
             
         except Exception as e:

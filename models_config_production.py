@@ -81,8 +81,8 @@ PRODUCTION_MODELS = [
     ModelConfig(
         name="model1_high_conf",
         model_path=str(PROJECT_ROOT / "models" / "model1_high_conf.joblib"),
-        threshold_long=0.55,   # Relaxed to allow signals (was 0.65)
-        threshold_short=0.45,  # Relaxed to allow signals (was 0.35)
+        threshold_long=0.52,   # Calibrated for live predictions 0.48-0.52 (was 0.55)
+        threshold_short=0.48,  # Calibrated for live predictions 0.48-0.52 (was 0.45)
         enabled=True
     ),
 
@@ -108,12 +108,17 @@ PRODUCTION_MODELS = [
     #   - Diversification benefit
     #
     # Note: PF slightly below target but still profitable with good WR
+    #
+    # ISSUE (2026-01-12 01:01): Model RF predictions cluster tightly (0.41-0.44)
+    # - Looser thresholds (0.55/0.45) caused 71 signals/hour (over-firing)
+    # - Predictions too close to 0.5 = low confidence
+    # - Keeping strict thresholds until prediction distribution improves
     # =========================================================================
     ModelConfig(
         name="model_rf_v4",
         model_path=str(PROJECT_ROOT / "models" / "model_rf_v4.joblib"),
-        threshold_long=0.55,   # Relaxed to allow signals (was 0.65)
-        threshold_short=0.45,  # Relaxed to allow signals (was 0.35)
+        threshold_long=0.65,   # Strict - live predictions cluster 0.41-0.44 (low confidence)
+        threshold_short=0.35,  # Strict - looser thresholds caused 71 signals/hr
         enabled=True
     ),
 

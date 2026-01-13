@@ -26,40 +26,17 @@ import numpy as np
 import pandas as pd
 import warnings
 
+# Import unified feature engineering (SAME AS TRAINING!)
+from src.features import build_features, get_all_feature_names
+
 # Suppress pandas FutureWarnings about fillna downcasting
 warnings.filterwarnings('ignore', category=FutureWarning, message='.*Downcasting.*')
 
 logger = logging.getLogger("FeatureBuffer")
 
 
-# Feature names must match training EXACTLY (60 features from model)
-FEATURE_NAMES = [
-    'micro_velocity', 'micro_entropy', 'effort_ratio', 'spread_zscore',
-    'synthetic_order_flow', 'flow_cvd_60', 'flow_divergence',
-    'ret_1', 'ret_3', 'ret_5', 'ret_10', 'log_ret_1',
-    'ret_mean_5', 'ret_mean_20', 'ret_mean_60',
-    'vol_10', 'vol_60', 'hl_range', 'norm_range', 'ATR_14',
-    'mid', 'spread', 'spread_pct',
-    'mid_ret_1', 'mid_vol_20', 'mid_slope_10',
-    'close_mid_diff', 'close_mid_spread_ratio',
-    'vol_change', 'vol_rel_20', 'vol_zscore_20', 'dollar_vol',
-    'body', 'range', 'upper_wick', 'lower_wick',
-    'body_pct', 'upper_wick_pct', 'lower_wick_pct', 'is_bull',
-    'ma_fast_15', 'ma_slow_60', 'ma_ratio', 'ma_slope_60',
-    'minute_sin', 'minute_cos', 'day_of_week',
-    'is_asia', 'is_europe', 'is_us',
-    'adx', 'adx_slope', 'efficiency_ratio', 'atr_percentile',
-    # Model #3 features (CMF/MACD)
-    'cmf', 'cmf_momentum', 'cmf_zscore', 'cmf_trend',
-    'macd', 'macd_signal', 'macd_histogram', 'macd_momentum',
-    'macd_signal_momentum', 'macd_above_signal', 'macd_cross_up',
-    'macd_cross_down', 'macd_hist_momentum', 'macd_zscore',
-    'rsi', 'atr', 'bb_middle', 'bb_upper', 'bb_lower', 'bb_width', 'bb_position',
-    'volume_ratio', 'price_momentum_5', 'price_momentum_20',
-    'price_vs_sma20', 'price_vs_sma50',
-    'regime_trending', 'regime_ranging', 'regime_volatile',
-    'wick_flow_interaction', 'body_flow_interaction', 'wick_volume_interaction',
-]
+# Feature names from unified registry (SAME AS TRAINING!)
+FEATURE_NAMES = get_all_feature_names()
 
 # Minimum bars needed for all features
 # Need 60 for vol_60, MA_60 + some buffer for rolling calculations
@@ -343,11 +320,14 @@ class FeatureBuffer:
     
     def get_feature_row(self) -> pd.DataFrame:
         """
-        Compute features for the latest bar.
-        
+        Compute features for the latest bar using UNIFIED MODULE.
+
+        CRITICAL: Uses SAME feature engineering as training (src.features.build_features)
+        to ensure perfect parity between training and live inference.
+
         Returns:
             Single-row DataFrame with all features
-            
+
         Raises:
             ValueError if not enough bars
         """
@@ -355,28 +335,38 @@ class FeatureBuffer:
             raise ValueError(
                 f"Not enough bars: {len(self._bars)} < {self.min_bars_required}"
             )
-        
+
         # Convert bars to DataFrame
         df = pd.DataFrame(list(self._bars))
         df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
         df = df.set_index("timestamp").sort_index()
-        
-        # Compute all features
-        features = self._compute_features(df)
-        
+
+        # Build quotes DataFrame if bid/ask available
+        quotes = None
+        if "bid_price" in df.columns and "ask_price" in df.columns:
+            quotes = df[["bid_price", "ask_price"]].copy()
+
+        # USE UNIFIED FEATURES (SAME AS TRAINING!)
+        # This replaces 400 lines of inline computation with single source of truth
+        try:
+            features = build_features(df, quotes=quotes, feature_set="all")
+        except Exception as e:
+            logger.error(f"Error computing features: {e}")
+            raise
+
         # Return only the latest row
         latest = features.iloc[[-1]].copy()
-        
+
         # Ensure all required features exist
         missing_features = []
         for feat in FEATURE_NAMES:
             if feat not in latest.columns:
                 latest[feat] = np.nan
                 missing_features.append(feat)
-        
+
         if missing_features:
             logger.warning(f"⚠️ Missing {len(missing_features)} features: {missing_features[:10]}")
-        
+
         # Check for NaN values
         nan_count = latest[FEATURE_NAMES].isna().sum().sum()
         if nan_count > 0:
@@ -385,406 +375,17 @@ class FeatureBuffer:
             logger.warning(f"⚠️ {nan_count} NaN values in features: {nan_features[:10]}")
             # Fill NaN with 0 (better than leaving as NaN)
             latest[FEATURE_NAMES] = latest[FEATURE_NAMES].fillna(0)
-        
+
         # Check for constant/zero features (data flow issue)
         feature_std = latest[FEATURE_NAMES].std()
         constant_features = feature_std[feature_std < 1e-6].index.tolist()
         if constant_features and len(self._bars) > 10:
             logger.debug(f"Constant features (possible data issue): {constant_features[:5]}")
-        
+
         # Select only required features in correct order
         return latest[FEATURE_NAMES]
-    
-    def _compute_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Compute all features from bar DataFrame.
-        
-        CRITICAL: All computations use only past/current data.
-        NO lookahead, NO shift(-N) operations.
-        """
-        df = df.copy()
-        
-        # =================================================================
-        # Price & Returns
-        # =================================================================
-        df["ret_1"] = df["close"].pct_change(1)
-        df["ret_3"] = df["close"].pct_change(3)
-        df["ret_5"] = df["close"].pct_change(5)
-        df["ret_10"] = df["close"].pct_change(10)
-        df["log_ret_1"] = np.log(df["close"] / df["close"].shift(1))
-        
-        df["ret_mean_5"] = df["ret_1"].rolling(5).mean()
-        df["ret_mean_20"] = df["ret_1"].rolling(20).mean()
-        df["ret_mean_60"] = df["ret_1"].rolling(60).mean()
-        
-        # =================================================================
-        # Volatility & Range
-        # =================================================================
-        df["vol_10"] = df["log_ret_1"].rolling(10).std()
-        df["vol_60"] = df["log_ret_1"].rolling(60).std()
-        
-        df["hl_range"] = df["high"] - df["low"]
-        df["norm_range"] = df["hl_range"] / df["close"]
-        
-        # ATR_14 using standard true range
-        df["prev_close"] = df["close"].shift(1)
-        df["tr"] = np.maximum(
-            df["high"] - df["low"],
-            np.maximum(
-                np.abs(df["high"] - df["prev_close"]),
-                np.abs(df["low"] - df["prev_close"])
-            )
-        )
-        df["ATR_14"] = df["tr"].rolling(14).mean()
-        
-        # =================================================================
-        # Microstructure (from quotes)
-        # =================================================================
-        if "bid_price" in df.columns and "ask_price" in df.columns:
-            df["mid"] = (df["bid_price"] + df["ask_price"]) / 2
-            df["spread"] = df["ask_price"] - df["bid_price"]
-            df["spread_pct"] = df["spread"] / df["mid"]
-        else:
-            df["mid"] = df["close"]
-            df["spread"] = 0.0
-            df["spread_pct"] = 0.0
-        
-        # Fill NaN mid with close (fix FutureWarning)
-        df["mid"] = df["mid"].infer_objects(copy=False).fillna(df["close"])
-        df["spread"] = df["spread"].infer_objects(copy=False).fillna(0)
-        df["spread_pct"] = df["spread_pct"].infer_objects(copy=False).fillna(0)
-        
-        df["mid_ret_1"] = df["mid"].pct_change(1)
-        df["mid_vol_20"] = df["mid_ret_1"].rolling(20).std()
-        
-        # Mid slope: OLS slope over last 10 bars
-        df["mid_slope_10"] = self._rolling_slope(df["mid"], 10)
-        
-        df["close_mid_diff"] = df["close"] - df["mid"]
-        df["close_mid_spread_ratio"] = np.where(
-            df["spread"] != 0,
-            df["close_mid_diff"] / df["spread"],
-            0
-        )
-        
-        # =================================================================
-        # Volume & Liquidity
-        # =================================================================
-        df["vol_change"] = df["volume"] / df["volume"].shift(1) - 1
-        df["vol_change"] = df["vol_change"].replace([np.inf, -np.inf], 0).infer_objects(copy=False).fillna(0)
-        
-        vol_median_20 = df["volume"].rolling(20).median()
-        df["vol_rel_20"] = df["volume"] / vol_median_20.replace(0, np.nan)
-        df["vol_rel_20"] = df["vol_rel_20"].infer_objects(copy=False).fillna(1)
-        
-        vol_mean_20 = df["volume"].rolling(20).mean()
-        vol_std_20 = df["volume"].rolling(20).std()
-        df["vol_zscore_20"] = (df["volume"] - vol_mean_20) / vol_std_20.replace(0, np.nan)
-        df["vol_zscore_20"] = df["vol_zscore_20"].infer_objects(copy=False).fillna(0)
-        
-        df["dollar_vol"] = df["close"] * df["volume"]
-        
-        # =================================================================
-        # Candlestick Structure
-        # =================================================================
-        df["body"] = df["close"] - df["open"]
-        df["range"] = df["high"] - df["low"]
-        
-        df["upper_wick"] = df["high"] - df[["open", "close"]].max(axis=1)
-        df["lower_wick"] = df[["open", "close"]].min(axis=1) - df["low"]
-        
-        df["body_pct"] = np.where(
-            df["range"] != 0,
-            np.abs(df["body"]) / df["range"],
-            0
-        )
-        df["upper_wick_pct"] = np.where(
-            df["range"] != 0,
-            df["upper_wick"] / df["range"],
-            0
-        )
-        df["lower_wick_pct"] = np.where(
-            df["range"] != 0,
-            df["lower_wick"] / df["range"],
-            0
-        )
-        
-        df["is_bull"] = (df["close"] > df["open"]).astype(int)
-        
-        # =================================================================
-        # Multi-Timeframe Context (MAs)
-        # =================================================================
-        df["ma_fast_15"] = df["close"].rolling(15).mean()
-        df["ma_slow_60"] = df["close"].rolling(60).mean()
-        
-        df["ma_ratio"] = df["ma_fast_15"] / df["ma_slow_60"] - 1
-        
-        # MA slope: average change over last 5 bars
-        ma_diff = df["ma_slow_60"].diff()
-        df["ma_slope_60"] = ma_diff.rolling(5).mean()
-        
-        # =================================================================
-        # Time Features
-        # =================================================================
-        if isinstance(df.index, pd.DatetimeIndex):
-            minute_of_day = df.index.hour * 60 + df.index.minute
-            df["minute_sin"] = np.sin(2 * np.pi * minute_of_day / 1440)
-            df["minute_cos"] = np.cos(2 * np.pi * minute_of_day / 1440)
-            df["day_of_week"] = df.index.dayofweek
-            
-            # Session flags (UTC times)
-            hour = df.index.hour
-            df["is_asia"] = ((hour >= 0) & (hour < 8)).astype(int)
-            df["is_europe"] = ((hour >= 7) & (hour < 16)).astype(int)
-            df["is_us"] = ((hour >= 13) & (hour < 22)).astype(int)
-        else:
-            df["minute_sin"] = 0
-            df["minute_cos"] = 0
-            df["day_of_week"] = 0
-            df["is_asia"] = 0
-            df["is_europe"] = 0
-            df["is_us"] = 0
-        
-        # =================================================================
-        # Microstructure Features (simplified for minute bars)
-        # =================================================================
-        # DATA LIMITATION WARNING:
-        # Our data includes OHLCV + top-of-book quotes (bid_price, ask_price).
-        # We do NOT have: trade-level data, order book depth, trade direction.
-        #
-        # The following features are APPROXIMATIONS based on tick rule:
-        # - synthetic_order_flow: price_direction * volume (NOT real order flow)
-        # - flow_cvd_60: cumulative synthetic flow (NOT real CVD)
-        # - flow_divergence: synthetic divergence
-        #
-        # These are legitimate for pattern detection but do NOT represent
-        # actual order flow or VPIN-style metrics.
-        
-        # micro_velocity: Approximate as tick count (use volume as proxy)
-        df["micro_velocity"] = df["volume"].infer_objects(copy=False).fillna(0)
-        
-        # micro_entropy: Approximate using price direction variance
-        price_dir = np.sign(df["close"].diff()).fillna(0)
-        entropy_vals = []
-        for i in range(len(price_dir)):
-            if i < 10:
-                entropy_vals.append(0.5)
-            else:
-                window = price_dir.iloc[max(0, i-19):i+1]
-                unique_count = len(np.unique(window))
-                entropy_vals.append(unique_count / max(len(window), 1))
-        df["micro_entropy"] = pd.Series(entropy_vals, index=df.index).infer_objects(copy=False).fillna(0.5)
-        
-        # effort_ratio: Range / Volume (already computed, but ensure it exists)
-        df["effort_ratio"] = np.where(
-            df["micro_velocity"] > 0,
-            df["range"] / (df["micro_velocity"] + 1),
-            0
-        )
-        
-        # spread_zscore: Z-score of spread
-        spread_mean = df["spread"].rolling(60, min_periods=10).mean()
-        spread_std = df["spread"].rolling(60, min_periods=10).std()
-        df["spread_zscore"] = pd.Series(
-            np.where(
-                spread_std > 0,
-                (df["spread"] - spread_mean) / spread_std,
-                0
-            ),
-            index=df.index
-        ).infer_objects(copy=False).fillna(0)
-        
-        # synthetic_order_flow: Approximate using price direction * volume
-        df["synthetic_order_flow"] = price_dir * df["volume"]
-        
-        # flow_cvd_60: Cumulative volume delta over 60 minutes
-        df["flow_cvd_60"] = df["synthetic_order_flow"].rolling(60, min_periods=10).sum().infer_objects(copy=False).fillna(0)
-        
-        # flow_divergence: Normalized price return vs flow trend
-        ret_60 = df["close"].pct_change(60)
-        ret_mean = ret_60.rolling(100, min_periods=20).mean()
-        ret_std = ret_60.rolling(100, min_periods=20).std()
-        ret_norm = pd.Series(
-            np.where(ret_std > 0, (ret_60 - ret_mean) / ret_std, 0),
-            index=df.index
-        )
-        
-        flow_mean = df["flow_cvd_60"].rolling(100, min_periods=20).mean()
-        flow_std = df["flow_cvd_60"].rolling(100, min_periods=20).std()
-        flow_norm = pd.Series(
-            np.where(flow_std > 0, (df["flow_cvd_60"] - flow_mean) / flow_std, 0),
-            index=df.index
-        )
-        
-        df["flow_divergence"] = flow_norm - ret_norm
-        
-        # =================================================================
-        # Regime Detection Features
-        # =================================================================
-        # ADX calculation
-        high = df["high"]
-        low = df["low"]
-        close = df["close"]
-        
-        # True Range
-        tr1 = high - low
-        tr2 = (high - close.shift(1)).abs()
-        tr3 = (low - close.shift(1)).abs()
-        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        
-        # Directional Movement
-        up_move = high - high.shift(1)
-        down_move = low.shift(1) - low
-        
-        # Create Series with proper index alignment
-        plus_dm = pd.Series(
-            np.where((up_move > down_move) & (up_move > 0), up_move, 0),
-            index=df.index
-        )
-        minus_dm = pd.Series(
-            np.where((down_move > up_move) & (down_move > 0), down_move, 0),
-            index=df.index
-        )
-        
-        # Smoothed indicators
-        atr_14 = tr.ewm(span=14, adjust=False).mean()
-        plus_di = 100 * plus_dm.ewm(span=14, adjust=False).mean() / atr_14
-        minus_di = 100 * minus_dm.ewm(span=14, adjust=False).mean() / atr_14
-        
-        # ADX
-        dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di + 1e-8)
-        df["adx"] = dx.ewm(span=14, adjust=False).mean().infer_objects(copy=False).fillna(0)
-        df["adx_slope"] = df["adx"].diff(5).infer_objects(copy=False).fillna(0)
-        
-        # Efficiency Ratio (Kaufman)
-        efficiency_window = 20
-        net_change = (close - close.shift(efficiency_window)).abs()
-        sum_changes = close.diff().abs().rolling(efficiency_window).sum()
-        df["efficiency_ratio"] = (net_change / (sum_changes + 1e-8)).infer_objects(copy=False).fillna(0)
-        
-        # ATR percentile
-        atr_lookback = 100
-        
-        # =================================================================
-        # Model #3 Features: CMF and MACD
-        # =================================================================
-        # Chaikin Money Flow (CMF)
-        high_low = df["high"] - df["low"]
-        close_low = df["close"] - df["low"]
-        high_close = df["high"] - df["close"]
-        mf_multiplier = np.where(high_low > 0, (close_low - high_close) / high_low, 0.0)
-        mf_volume = mf_multiplier * df["volume"]
-        df["cmf"] = (mf_volume.rolling(20, min_periods=1).sum() / 
-                     df["volume"].rolling(20, min_periods=1).sum())
-        df["cmf_momentum"] = df["cmf"].diff(20)
-        cmf_mean = df["cmf"].rolling(40, min_periods=20).mean()
-        cmf_std = df["cmf"].rolling(40, min_periods=20).std()
-        df["cmf_zscore"] = (df["cmf"] - cmf_mean) / (cmf_std + 1e-8)
-        df["cmf_trend"] = df["cmf"].rolling(20, min_periods=20).apply(
-            lambda x: np.polyfit(range(len(x)), x, 1)[0] if len(x) >= 20 else 0,
-            raw=False
-        )
-        
-        # MACD
-        ema_fast = df["close"].ewm(span=12, adjust=False).mean()
-        ema_slow = df["close"].ewm(span=26, adjust=False).mean()
-        df["macd"] = ema_fast - ema_slow
-        df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
-        df["macd_histogram"] = df["macd"] - df["macd_signal"]
-        df["macd_momentum"] = df["macd"].diff()
-        df["macd_signal_momentum"] = df["macd_signal"].diff()
-        df["macd_above_signal"] = (df["macd"] > df["macd_signal"]).astype(int)
-        df["macd_cross_up"] = ((df["macd"] > df["macd_signal"]) & 
-                               (df["macd"].shift(1) <= df["macd_signal"].shift(1))).astype(int)
-        df["macd_cross_down"] = ((df["macd"] < df["macd_signal"]) & 
-                                 (df["macd"].shift(1) >= df["macd_signal"].shift(1))).astype(int)
-        df["macd_hist_momentum"] = df["macd_histogram"].diff()
-        macd_mean = df["macd"].rolling(52, min_periods=26).mean()
-        macd_std = df["macd"].rolling(52, min_periods=26).std()
-        df["macd_zscore"] = (df["macd"] - macd_mean) / (macd_std + 1e-8)
-        
-        # Additional indicators for Model #3
-        # ATR (Model #3 expects 'atr', not 'ATR_14')
-        # Use ATR_14 if available, otherwise compute it
-        if "ATR_14" in df.columns:
-            df["atr"] = df["ATR_14"]
-        else:
-            # Compute ATR if not available
-            tr1 = df["high"] - df["low"]
-            tr2 = (df["high"] - df["close"].shift(1)).abs()
-            tr3 = (df["low"] - df["close"].shift(1)).abs()
-            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-            df["atr"] = tr.rolling(14, min_periods=1).mean()
-        
-        # RSI
-        delta = df["close"].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14, min_periods=1).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14, min_periods=1).mean()
-        rs = gain / (loss + 1e-8)
-        df["rsi"] = 100 - (100 / (1 + rs))
-        
-        # Bollinger Bands
-        df["bb_middle"] = df["close"].rolling(20, min_periods=1).mean()
-        bb_std = df["close"].rolling(20, min_periods=1).std()
-        df["bb_upper"] = df["bb_middle"] + (bb_std * 2)
-        df["bb_lower"] = df["bb_middle"] - (bb_std * 2)
-        df["bb_width"] = (df["bb_upper"] - df["bb_lower"]) / (df["bb_middle"] + 1e-8)
-        df["bb_position"] = (df["close"] - df["bb_lower"]) / (df["bb_upper"] - df["bb_lower"] + 1e-8)
-        
-        # Volume ratio
-        df["volume_sma"] = df["volume"].rolling(20, min_periods=1).mean()
-        df["volume_ratio"] = df["volume"] / (df["volume_sma"] + 1e-8)
-        
-        # Price momentum
-        df["price_momentum_5"] = df["close"].pct_change(5)
-        df["price_momentum_20"] = df["close"].pct_change(20)
-        
-        # Moving averages
-        df["sma_20"] = df["close"].rolling(20, min_periods=1).mean()
-        df["sma_50"] = df["close"].rolling(50, min_periods=1).mean()
-        df["price_vs_sma20"] = (df["close"] - df["sma_20"]) / (df["sma_20"] + 1e-8)
-        df["price_vs_sma50"] = (df["close"] - df["sma_50"]) / (df["sma_50"] + 1e-8)
-        
-        # Fill NaNs for Model #3 features
-        model3_cols = ['cmf', 'cmf_momentum', 'cmf_zscore', 'cmf_trend',
-                      'macd', 'macd_signal', 'macd_histogram', 'macd_momentum',
-                      'macd_signal_momentum', 'macd_above_signal', 'macd_cross_up',
-                      'macd_cross_down', 'macd_hist_momentum', 'macd_zscore',
-                      'rsi', 'atr', 'bb_middle', 'bb_upper', 'bb_lower', 'bb_width', 'bb_position',
-                      'volume_ratio', 'price_momentum_5', 'price_momentum_20',
-                      'price_vs_sma20', 'price_vs_sma50']
-        for col in model3_cols:
-            if col in df.columns:
-                df[col] = df[col].fillna(0).infer_objects(copy=False)
-        # ATR percentile (use ATR_14 if available, otherwise use atr)
-        atr_col = "ATR_14" if "ATR_14" in df.columns else "atr"
-        df["atr_percentile"] = df[atr_col].rolling(atr_lookback, min_periods=10).apply(
-            lambda x: pd.Series(x).rank(pct=True).iloc[-1] if len(x) > 0 else 0.5,
-            raw=False
-        ).infer_objects(copy=False).fillna(0.5)
-        
-        # Regime flags
-        df["regime_trending"] = ((df["adx"] > 25) & (df["efficiency_ratio"] > 0.5)).astype(int)
-        df["regime_ranging"] = ((df["adx"] < 20) & (df["atr_percentile"] < 0.75)).astype(int)
-        df["regime_volatile"] = (df["atr_percentile"] > 0.75).astype(int)
-        
-        # =================================================================
-        # Interaction Features
-        # =================================================================
-        # Use flow_cvd_60 for interactions (if available, else synthetic_order_flow)
-        flow_col = "flow_cvd_60" if "flow_cvd_60" in df.columns else "synthetic_order_flow"
-        
-        df["wick_flow_interaction"] = df["upper_wick"] * np.sign(df[flow_col])
-        df["body_flow_interaction"] = df["body"] * np.sign(df[flow_col])
-        df["wick_volume_interaction"] = df["upper_wick"] * df["volume"]
-        
-        # Clean up temp columns
-        for col in ["prev_close", "tr"]:
-            if col in df.columns:
-                df = df.drop(columns=[col])
-        
-        return df
-    
+
+
     def _rolling_slope(self, series: pd.Series, window: int) -> pd.Series:
         """Compute rolling OLS slope."""
         def slope(y):

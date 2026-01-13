@@ -2,8 +2,13 @@
 """
 COMPLETE REBUILD - Train Trading Models from Scratch
 
+UPDATED 2026-01-13: Now uses UNIFIED FEATURE ENGINEERING!
+- Uses src.features.build_features() for training/live parity
+- Fixed lookahead bias in synthetic_order_flow
+- Single source of truth for all features
+
 Strategy:
-1. Feature Engineering: ALL features (microstructure + CMF/MACD + momentum)
+1. Feature Engineering: ALL features via unified module (microstructure + CMF/MACD + regime)
 2. Walk-Forward Validation: 2014-2025, train on past, test on future
 3. Robust Labels: Learn from BOTH good and bad trades
 4. Anti-Overfitting: Multiple validation periods, conservative hyperparameters
@@ -31,11 +36,7 @@ from sklearn.metrics import classification_report, roc_auc_score
 
 # Project imports
 sys.path.insert(0, str(Path(__file__).parent))
-from src.model3_cmf_macd.features import (
-    compute_chaikin_money_flow,
-    compute_macd,
-    compute_additional_indicators
-)
+from src.features import build_features, get_features_for_model
 
 print("="*80)
 print("REBUILD FROM SCRATCH - Honest Model Training")
@@ -138,38 +139,28 @@ config = Config()
 # STEP 1: FEATURE ENGINEERING
 # ============================================================================
 
-def build_all_features(df: pd.DataFrame) -> pd.DataFrame:
+def build_all_features(df: pd.DataFrame, quotes: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """
-    Build ALL features: microstructure + CMF/MACD + momentum.
+    Build ALL features using unified feature engineering module.
 
-    This ensures BOTH Model 1 and Model 3 have their required features.
+    Uses src.features.build_features() - the SINGLE SOURCE OF TRUTH.
+    This ensures training and live use IDENTICAL feature computation.
+
+    Args:
+        df: Bar data with OHLCV columns
+        quotes: Optional quote data with bid/ask (for microstructure features)
+
+    Returns:
+        DataFrame with all features
     """
     print("\n" + "="*80)
-    print("STEP 1: FEATURE ENGINEERING")
+    print("STEP 1: UNIFIED FEATURE ENGINEERING")
     print("="*80)
 
     print(f"Input data: {len(df):,} rows from {df.index[0]} to {df.index[-1]}")
 
-    # CMF/MACD features (for Model 3)
-    print("\n  Adding CMF features...")
-    df = compute_chaikin_money_flow(df, period=20)
-
-    print("  Adding MACD features...")
-    df = compute_macd(df, fast=12, slow=26, signal=9)
-
-    print("  Adding technical indicators...")
-    df = compute_additional_indicators(df)
-
-    # Additional momentum features
-    print("  Adding momentum features...")
-    df['momentum_5'] = df['close'].pct_change(5)
-    df['momentum_10'] = df['close'].pct_change(10)
-    df['momentum_20'] = df['close'].pct_change(20)
-
-    # Volatility features
-    print("  Adding volatility features...")
-    df['volatility_5'] = df['close'].pct_change().rolling(5).std()
-    df['volatility_20'] = df['close'].pct_change().rolling(20).std()
+    # Use unified feature builder (SAME AS LIVE!)
+    df = build_features(df, quotes=quotes, feature_set="all")
 
     # Feature completeness check
     nan_counts = df.isna().sum()
@@ -177,10 +168,10 @@ def build_all_features(df: pd.DataFrame) -> pd.DataFrame:
         print(f"\n  ⚠️ Found NaN values:")
         for col in nan_counts[nan_counts > 0].index[:10]:  # Show first 10
             print(f"    {col}: {nan_counts[col]:,} NaN")
-        print(f"  Filling NaN with 0...")
-        df = df.fillna(0)
+        print(f"  Filling NaN with forward-fill then 0...")
+        df = df.fillna(method='ffill').fillna(0)
 
-    print(f"\n✓ Feature engineering complete")
+    print(f"\n✓ Feature engineering complete (using unified module)")
     print(f"  Total features: {len(df.columns)}")
     print(f"  Total rows: {len(df):,}")
 
@@ -188,53 +179,29 @@ def build_all_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def get_feature_set(df: pd.DataFrame, feature_type: str) -> List[str]:
-    """Get list of features for a specific model type."""
+    """
+    Get list of features for a specific model type.
 
-    # Base features (always included)
-    base = ['ATR_14', 'volume', 'spread_pct', 'close', 'high', 'low']
+    Uses src.features.get_features_for_model() - the SINGLE SOURCE OF TRUTH.
+    This ensures training and live use IDENTICAL feature lists.
 
-    # Microstructure features (Model 1, Model RF)
-    microstructure = [
-        'micro_velocity', 'micro_entropy', 'effort_ratio',
-        'spread_zscore', 'synthetic_order_flow', 'flow_cvd_60',
-        'flow_divergence', 'ret_1', 'ret_5', 'ret_10',
-        'vol_10', 'vol_60', 'hl_range', 'norm_range',
-        'mid_ret_1', 'mid_vol_20', 'close_mid_diff',
-        'body_pct', 'upper_wick_pct', 'lower_wick_pct',
-        'adx', 'efficiency_ratio', 'atr_percentile',
-        'regime_trending', 'regime_ranging', 'regime_volatile',
-    ]
+    Args:
+        df: DataFrame with features
+        feature_type: One of 'microstructure', 'cmf_macd' (or model names)
 
-    # CMF/MACD features (Model 3)
-    cmf_macd = [
-        'cmf', 'cmf_momentum', 'cmf_zscore', 'cmf_trend',
-        'macd', 'macd_signal', 'macd_histogram',
-        'macd_momentum', 'macd_signal_momentum',
-        'macd_above_signal', 'macd_cross_up', 'macd_cross_down',
-        'macd_hist_momentum', 'macd_zscore',
-        'rsi', 'bb_width', 'bb_position',
-        'volume_ratio', 'price_momentum_5', 'price_momentum_20',
-    ]
+    Returns:
+        List of available feature names
+    """
+    # Get required features from unified registry
+    features = get_features_for_model(feature_type)
 
-    # Momentum features (all models)
-    momentum = [
-        'momentum_5', 'momentum_10', 'momentum_20',
-        'volatility_5', 'volatility_20',
-    ]
-
-    if feature_type == 'microstructure':
-        features = base + microstructure + momentum
-    elif feature_type == 'cmf_macd':
-        features = base + cmf_macd + momentum
-    else:
-        raise ValueError(f"Unknown feature type: {feature_type}")
-
-    # Filter to only features that exist
+    # Filter to only features that exist in DataFrame
     available = [f for f in features if f in df.columns]
     missing = [f for f in features if f not in df.columns]
 
     if missing:
         print(f"  ⚠️ Missing {len(missing)} features: {missing[:5]}...")
+        print(f"     Total requested: {len(features)}, Available: {len(available)}")
 
     return available
 

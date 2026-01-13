@@ -103,16 +103,21 @@ def compute_microstructure_features(
 
     quotes = quotes.copy()
 
-    # 2. Compute mid price and spread (vectorized)
+    # 2. Ensure numeric types for price columns
+    print("    Ensuring numeric types...")
+    quotes['ask_price'] = pd.to_numeric(quotes['ask_price'], errors='coerce')
+    quotes['bid_price'] = pd.to_numeric(quotes['bid_price'], errors='coerce')
+
+    # 3. Compute mid price and spread (vectorized)
     print("    Computing mid/spread...")
     quotes['mid'] = (quotes['ask_price'] + quotes['bid_price']) / 2
     quotes['spread'] = quotes['ask_price'] - quotes['bid_price']
 
-    # 3. Compute tick direction (sign of mid price change)
+    # 4. Compute tick direction (sign of mid price change)
     # Note: First tick has no previous, set to 0 (neutral)
     quotes['tick_dir'] = np.sign(quotes['mid'].diff()).fillna(0)
 
-    # 4. Resample to 1-minute bars (align with bars frequency)
+    # 5. Resample to 1-minute bars (align with bars frequency)
     print("    Resampling quotes to 1-minute...")
 
     # FEATURE A: QUOTE VELOCITY (ticks per minute)

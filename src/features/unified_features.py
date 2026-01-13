@@ -70,6 +70,11 @@ def merge_quotes_to_bars(
     bars = bars.sort_index()
     quotes = quotes.sort_index()
 
+    # Ensure price columns are numeric
+    quotes = quotes.copy()
+    quotes['bid_price'] = pd.to_numeric(quotes['bid_price'], errors='coerce')
+    quotes['ask_price'] = pd.to_numeric(quotes['ask_price'], errors='coerce')
+
     # Reset index for merge_asof
     bars_reset = bars.reset_index()
     quotes_reset = quotes[["bid_price", "ask_price"]].reset_index()
@@ -170,6 +175,11 @@ def build_features(
 
     # Copy to avoid modifying input
     df = bars.copy()
+
+    # Ensure OHLCV columns are numeric
+    for col in ['open', 'high', 'low', 'close', 'volume']:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
 
     # Step 1: Merge quotes if available
     if quotes is not None and not quotes.empty:

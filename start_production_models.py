@@ -63,6 +63,12 @@ def main():
         help="Test mode (no Telegram notifications)"
     )
     parser.add_argument(
+        "--backfill",
+        action="store_true",
+        default=True,
+        help="Enable REST API backfill (default: True, for backward compatibility)"
+    )
+    parser.add_argument(
         "--no-backfill",
         action="store_true",
         help="Disable REST API backfill (use live warmup only)"

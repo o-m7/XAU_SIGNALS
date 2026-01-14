@@ -63,7 +63,7 @@ from .multi_model_engine import MultiModelSignalEngine, ModelConfig
 from .telegram_bot import TelegramBot
 from .risk_guard import RiskGuard
 from .symbol_resolver import SymbolResolver
-from .backfill import backfill_feature_buffer
+from .backfill import backfill_feature_buffer, BackfillManager
 
 # Model 4 imports (optional - only loaded if model_version == "v4")
 try:
@@ -333,7 +333,11 @@ class LiveRunner:
         self._signals_generated = 0
         self._warmup_notified = False
         self._last_signal_time: Optional[datetime] = None
-        
+
+        # Periodic backfill manager (started after initial backfill)
+        self.backfill_manager: Optional[BackfillManager] = None
+        self.backfill_refresh_interval = 30  # Refresh every 30 minutes
+
         logger.info("LiveRunner initialized successfully")
     
     def _do_backfill(self):
@@ -341,17 +345,29 @@ class LiveRunner:
         logger.info("=" * 60)
         logger.info("  PERFORMING REST API BACKFILL")
         logger.info("=" * 60)
-        
+
         success = backfill_feature_buffer(
             feature_buffer=self.feature_buffer,
             api_key=self.config["polygon_api_key"],
             resolver=self.resolver,
             lookback_bars=self.backfill_bars,
+            fetch_quotes=True,  # Fetch historical quotes for accurate bid/ask
         )
-        
+
         if success:
             logger.info("✓ Backfill successful - feature buffer is ready")
             self._warmup_notified = True  # Skip warmup notification
+
+            # Start periodic backfill refresh
+            self.backfill_manager = BackfillManager(
+                feature_buffer=self.feature_buffer,
+                api_key=self.config["polygon_api_key"],
+                resolver=self.resolver,
+                refresh_interval_minutes=self.backfill_refresh_interval,
+                lookback_bars=100,  # Refresh with last 100 bars
+            )
+            self.backfill_manager.start()
+            logger.info(f"✓ Periodic refresh started (every {self.backfill_refresh_interval} min)")
         else:
             logger.warning("⚠ Backfill failed - falling back to live warmup")
     
@@ -432,10 +448,14 @@ class LiveRunner:
         """Stop the live signal engine."""
         logger.info("Stopping LiveRunner...")
         self._running = False
-        
+
+        # Stop periodic backfill refresh
+        if self.backfill_manager:
+            self.backfill_manager.stop()
+
         # Stop price stream
         self.price_stream.stop()
-        
+
         # Send shutdown notification
         if self.telegram_bot.enabled and self._warmup_notified:
             status = self.risk_guard.get_status()

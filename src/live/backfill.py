@@ -529,7 +529,8 @@ class BackfillManager:
                 bars_df = merge_quotes_into_bars(bars_df, quotes_df)
 
             # Update feature buffer with fresh bars
-            # Only add bars that are newer than what we have
+            # Use add_bar_no_features to avoid triggering feature computation
+            # This prevents concurrent feature computations with WebSocket thread
             current_bar_count = self.feature_buffer.get_bar_count()
             new_bars = 0
 
@@ -546,8 +547,9 @@ class BackfillManager:
                     "ask_price": row.get("ask_price"),
                 }
 
-                # This will add to buffer (deque handles max size)
-                self.feature_buffer.update_from_bar(event)
+                # Use add_bar_no_features to avoid triggering feature computation
+                # Feature computation will happen on next WebSocket event
+                self.feature_buffer.add_bar_no_features(event)
                 new_bars += 1
 
             self._last_refresh = datetime.now(timezone.utc)

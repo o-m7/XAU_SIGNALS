@@ -280,7 +280,7 @@ def compute_regime_flags(
 # MASTER REGIME FEATURE BUILDER
 # =============================================================================
 
-def compute_regime_features(df: pd.DataFrame) -> pd.DataFrame:
+def compute_regime_features(df: pd.DataFrame, verbose: bool = False) -> pd.DataFrame:
     """
     Compute all regime detection features.
 
@@ -295,6 +295,7 @@ def compute_regime_features(df: pd.DataFrame) -> pd.DataFrame:
 
     Args:
         df: DataFrame with OHLC data
+        verbose: Print progress messages (default False)
 
     Returns:
         DataFrame with all regime features added
@@ -303,7 +304,8 @@ def compute_regime_features(df: pd.DataFrame) -> pd.DataFrame:
         - All features use NO lookahead bias
         - Regimes help filter trades (e.g., trend-following in trending regime)
     """
-    print("  Computing regime detection features...")
+    if verbose:
+        print("  Computing regime detection features...")
 
     # ADX
     df = compute_adx(df, period=14)
@@ -325,7 +327,8 @@ def compute_regime_features(df: pd.DataFrame) -> pd.DataFrame:
         atr_volatile_threshold=0.75
     )
 
-    print(f"    ✓ Regime features complete")
+    if verbose:
+        print(f"    ✓ Regime features complete")
     return df
 
 

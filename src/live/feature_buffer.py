@@ -22,6 +22,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Any
 from collections import deque
+import threading
 import numpy as np
 import pandas as pd
 import warnings
@@ -87,6 +88,10 @@ class FeatureBuffer:
         self._last_feature_time: Optional[datetime] = None
         self._last_feature_row: Optional[pd.DataFrame] = None
         self._feature_debounce_seconds = 5  # Min seconds between feature computations
+
+        # Thread safety lock for feature computation
+        self._feature_lock = threading.Lock()
+        self._computing_features = False
 
         logger.info(
             f"FeatureBuffer initialized: max_window={max_window}, "
@@ -183,11 +188,53 @@ class FeatureBuffer:
         
         self._bars.append(bar)
         self._log_warmup_progress()
-        
+
         if self.is_ready():
             return self.get_feature_row()
         return None
-    
+
+    def add_bar_no_features(self, event: Dict) -> None:
+        """
+        Add a bar to the buffer WITHOUT triggering feature computation.
+
+        Use this for batch backfill updates to avoid redundant computations.
+        After all bars are added, call get_feature_row() once if needed.
+
+        Args:
+            event: Dict with type="bar", timestamp, OHLCV, optional bid/ask
+        """
+        timestamp = event["timestamp"]
+        if isinstance(timestamp, str):
+            timestamp = pd.to_datetime(timestamp, utc=True)
+        elif timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+
+        # Use latest quote bid/ask if available and recent
+        bid_price = event.get("bid_price")
+        ask_price = event.get("ask_price")
+        if bid_price is None and ask_price is None:
+            if (self._last_quote_bid is not None and
+                self._last_quote_ask is not None and
+                self._last_quote_time is not None):
+                quote_age_seconds = (timestamp - self._last_quote_time).total_seconds()
+                if abs(quote_age_seconds) <= 120:
+                    bid_price = self._last_quote_bid
+                    ask_price = self._last_quote_ask
+
+        bar = {
+            "timestamp": timestamp,
+            "open": event["open"],
+            "high": event["high"],
+            "low": event["low"],
+            "close": event["close"],
+            "volume": event.get("volume", 0),
+            "bid_price": bid_price,
+            "ask_price": ask_price,
+            "n_ticks": 1,
+        }
+
+        self._bars.append(bar)
+
     def _update(self, tick: Dict) -> Optional[pd.DataFrame]:
         """
         Internal update from tick.
@@ -330,6 +377,8 @@ class FeatureBuffer:
         CRITICAL: Uses SAME feature engineering as training (src.features.build_features)
         to ensure perfect parity between training and live inference.
 
+        Thread-safe: Uses lock to prevent concurrent computations.
+
         Returns:
             Single-row DataFrame with all features
 
@@ -350,64 +399,84 @@ class FeatureBuffer:
             logger.debug(f"Returning cached features (debounce)")
             return self._last_feature_row
 
-        # Convert bars to DataFrame
-        df = pd.DataFrame(list(self._bars))
-        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
-        df = df.set_index("timestamp").sort_index()
+        # Thread safety: Only one thread can compute features at a time
+        # If another thread is computing, return cached result or wait
+        if self._computing_features:
+            logger.debug("Another thread is computing features, returning cached")
+            if self._last_feature_row is not None:
+                return self._last_feature_row
+            # Wait for lock if no cache available
 
-        # Build quotes DataFrame if bid/ask available
-        # Forward-fill any missing bid/ask values to handle gaps in quote stream
-        quotes = None
-        if "bid_price" in df.columns and "ask_price" in df.columns:
-            # Forward-fill to handle bars without matching quotes
-            df["bid_price"] = df["bid_price"].ffill()
-            df["ask_price"] = df["ask_price"].ffill()
-            quotes = df[["bid_price", "ask_price"]].copy()
+        with self._feature_lock:
+            # Double-check after acquiring lock (another thread may have computed)
+            now = datetime.now(timezone.utc)
+            if (self._last_feature_time is not None and
+                self._last_feature_row is not None and
+                (now - self._last_feature_time).total_seconds() < self._feature_debounce_seconds):
+                return self._last_feature_row
 
-        # USE UNIFIED FEATURES (SAME AS TRAINING!)
-        # This replaces 400 lines of inline computation with single source of truth
-        try:
-            features = build_features(df, quotes=quotes, feature_set="all")
-        except Exception as e:
-            logger.error(f"Error computing features: {e}")
-            raise
+            self._computing_features = True
+            try:
+                # Convert bars to DataFrame
+                df = pd.DataFrame(list(self._bars))
+                df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+                df = df.set_index("timestamp").sort_index()
 
-        # Return only the latest row
-        latest = features.iloc[[-1]].copy()
+                # Build quotes DataFrame if bid/ask available
+                # Forward-fill any missing bid/ask values to handle gaps in quote stream
+                quotes = None
+                if "bid_price" in df.columns and "ask_price" in df.columns:
+                    # Forward-fill to handle bars without matching quotes
+                    df["bid_price"] = df["bid_price"].ffill()
+                    df["ask_price"] = df["ask_price"].ffill()
+                    quotes = df[["bid_price", "ask_price"]].copy()
 
-        # Ensure all required features exist
-        missing_features = []
-        for feat in FEATURE_NAMES:
-            if feat not in latest.columns:
-                latest[feat] = np.nan
-                missing_features.append(feat)
+                # USE UNIFIED FEATURES (SAME AS TRAINING!)
+                # This replaces 400 lines of inline computation with single source of truth
+                try:
+                    features = build_features(df, quotes=quotes, feature_set="all")
+                except Exception as e:
+                    logger.error(f"Error computing features: {e}")
+                    raise
 
-        if missing_features:
-            logger.warning(f"⚠️ Missing {len(missing_features)} features: {missing_features[:10]}")
+                # Return only the latest row
+                latest = features.iloc[[-1]].copy()
 
-        # Check for NaN values
-        nan_count = latest[FEATURE_NAMES].isna().sum().sum()
-        if nan_count > 0:
-            nan_features = latest[FEATURE_NAMES].isna().sum()
-            nan_features = nan_features[nan_features > 0].index.tolist()
-            logger.warning(f"⚠️ {nan_count} NaN values in features: {nan_features[:10]}")
-            # Fill NaN with 0 (better than leaving as NaN)
-            latest[FEATURE_NAMES] = latest[FEATURE_NAMES].fillna(0)
+                # Ensure all required features exist
+                missing_features = []
+                for feat in FEATURE_NAMES:
+                    if feat not in latest.columns:
+                        latest[feat] = np.nan
+                        missing_features.append(feat)
 
-        # Check for constant/zero features (data flow issue)
-        feature_std = latest[FEATURE_NAMES].std()
-        constant_features = feature_std[feature_std < 1e-6].index.tolist()
-        if constant_features and len(self._bars) > 10:
-            logger.debug(f"Constant features (possible data issue): {constant_features[:5]}")
+                if missing_features:
+                    logger.warning(f"⚠️ Missing {len(missing_features)} features: {missing_features[:10]}")
 
-        # Select only required features in correct order
-        result = latest[FEATURE_NAMES]
+                # Check for NaN values
+                nan_count = latest[FEATURE_NAMES].isna().sum().sum()
+                if nan_count > 0:
+                    nan_features = latest[FEATURE_NAMES].isna().sum()
+                    nan_features = nan_features[nan_features > 0].index.tolist()
+                    logger.warning(f"⚠️ {nan_count} NaN values in features: {nan_features[:10]}")
+                    # Fill NaN with 0 (better than leaving as NaN)
+                    latest[FEATURE_NAMES] = latest[FEATURE_NAMES].fillna(0)
 
-        # Cache the result for debouncing
-        self._last_feature_time = datetime.now(timezone.utc)
-        self._last_feature_row = result
+                # Check for constant/zero features (data flow issue)
+                feature_std = latest[FEATURE_NAMES].std()
+                constant_features = feature_std[feature_std < 1e-6].index.tolist()
+                if constant_features and len(self._bars) > 10:
+                    logger.debug(f"Constant features (possible data issue): {constant_features[:5]}")
 
-        return result
+                # Select only required features in correct order
+                result = latest[FEATURE_NAMES]
+
+                # Cache the result for debouncing
+                self._last_feature_time = datetime.now(timezone.utc)
+                self._last_feature_row = result
+
+                return result
+            finally:
+                self._computing_features = False
 
 
     def _rolling_slope(self, series: pd.Series, window: int) -> pd.Series:

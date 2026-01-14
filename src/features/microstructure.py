@@ -53,7 +53,8 @@ def calculate_entropy(series: pd.Series) -> float:
 
 def compute_microstructure_features(
     bars: pd.DataFrame,
-    quotes: Optional[pd.DataFrame] = None
+    quotes: Optional[pd.DataFrame] = None,
+    verbose: bool = False
 ) -> pd.DataFrame:
     """
     Compute microstructure features from quotes and bars.
@@ -70,6 +71,7 @@ def compute_microstructure_features(
     Args:
         bars: DataFrame with OHLCV data (timestamp index)
         quotes: Optional DataFrame with bid_price, ask_price (timestamp index)
+        verbose: Print progress messages (default False)
 
     Returns:
         DataFrame with 7 microstructure features (same index as bars)
@@ -91,8 +93,9 @@ def compute_microstructure_features(
             data=np.nan
         )
 
-    print("  Computing microstructure features...")
-    print(f"    Quotes: {len(quotes):,} | Bars: {len(bars):,}")
+    if verbose:
+        print("  Computing microstructure features...")
+        print(f"    Quotes: {len(quotes):,} | Bars: {len(bars):,}")
 
     # 1. Ensure datetime index
     if not isinstance(quotes.index, pd.DatetimeIndex):
@@ -104,12 +107,10 @@ def compute_microstructure_features(
     quotes = quotes.copy()
 
     # 2. Ensure numeric types for price columns
-    print("    Ensuring numeric types...")
     quotes['ask_price'] = pd.to_numeric(quotes['ask_price'], errors='coerce')
     quotes['bid_price'] = pd.to_numeric(quotes['bid_price'], errors='coerce')
 
     # 3. Compute mid price and spread (vectorized)
-    print("    Computing mid/spread...")
     quotes['mid'] = (quotes['ask_price'] + quotes['bid_price']) / 2
     quotes['spread'] = quotes['ask_price'] - quotes['bid_price']
 
@@ -118,8 +119,6 @@ def compute_microstructure_features(
     quotes['tick_dir'] = np.sign(quotes['mid'].diff()).fillna(0)
 
     # 5. Resample to 1-minute bars (align with bars frequency)
-    print("    Resampling quotes to 1-minute...")
-
     # FEATURE A: QUOTE VELOCITY (ticks per minute)
     feat_velocity = quotes['mid'].resample('1min').count().to_frame(name='micro_velocity')
 
@@ -128,13 +127,11 @@ def compute_microstructure_features(
     feat_spread.columns = ['spread_avg', 'spread_max', 'spread_vol']
 
     # FEATURE C: MICRO-ENTROPY (Shannon entropy of tick directions)
-    print("    Computing entropy...")
     feat_entropy = quotes['tick_dir'].resample('1min').apply(calculate_entropy)
     feat_entropy = feat_entropy.to_frame(name='micro_entropy')
 
     # FEATURE D: NET TICK PRESSURE (up_ticks - down_ticks)
     # This is the raw synthetic order flow (no volume multiplication)
-    print("    Computing order flow...")
     feat_flow = quotes['tick_dir'].resample('1min').sum().to_frame(name='net_tick_pressure')
 
     # 5. Merge quote features
@@ -151,8 +148,6 @@ def compute_microstructure_features(
     range_val = combined['high'] - combined['low']
     combined['effort_ratio'] = range_val / (combined['micro_velocity'] + 1)
 
-    print("    Computing rolling features...")
-
     # FEATURE F: SPREAD Z-SCORE (normalized spread)
     # Rolling 60-minute normalization (measures liquidity regime)
     spread_mean = combined['spread_avg'].rolling(60, min_periods=10).mean()
@@ -160,19 +155,8 @@ def compute_microstructure_features(
     combined['spread_zscore'] = (combined['spread_avg'] - spread_mean) / (spread_std + 1e-8)
 
     # FEATURE G: SYNTHETIC ORDER FLOW (FIXED!)
-    # OLD (WRONG): net_tick_pressure * volume
-    # NEW (CORRECT): net_tick_pressure directly
-    #
-    # Rationale:
-    # - net_tick_pressure already represents net buying/selling (up - down ticks)
-    # - Example: +50 means 50 more up ticks than down ticks
-    # - This IS the order flow signal
-    # - Bar volume is independent (total trades, not tick direction)
-    # - Multiplying by volume creates semantic mismatch
-    print("    Computing synthetic order flow (FIXED)...")
+    # net_tick_pressure already represents net buying/selling (up - down ticks)
     combined['synthetic_order_flow'] = combined['net_tick_pressure']
-
-    print("    Computing cumulative flow and divergence...")
 
     # FEATURE H: CUMULATIVE VOLUME DELTA (60-minute rolling sum)
     # Smooths out noise to see flow trend
@@ -220,7 +204,8 @@ def compute_microstructure_features(
         'flow_divergence'
     ]
 
-    print(f"    ✓ Microstructure features complete: {len(feature_cols)} features")
+    if verbose:
+        print(f"    ✓ Microstructure features complete: {len(feature_cols)} features")
     return combined[feature_cols]
 
 

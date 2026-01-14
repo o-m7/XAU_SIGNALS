@@ -398,7 +398,7 @@ def compute_time_features(df: pd.DataFrame) -> pd.DataFrame:
 # MASTER PRICE ACTION BUILDER
 # =============================================================================
 
-def compute_price_action_features(df: pd.DataFrame) -> pd.DataFrame:
+def compute_price_action_features(df: pd.DataFrame, verbose: bool = False) -> pd.DataFrame:
     """
     Compute all price action features.
 
@@ -415,6 +415,7 @@ def compute_price_action_features(df: pd.DataFrame) -> pd.DataFrame:
 
     Args:
         df: DataFrame with OHLCV data (and optionally bid_price, ask_price)
+        verbose: Print progress messages (default False)
 
     Returns:
         DataFrame with all price action features added
@@ -423,7 +424,8 @@ def compute_price_action_features(df: pd.DataFrame) -> pd.DataFrame:
         - All features use NO lookahead bias
         - Optional features (microstructure, volume) skipped if data unavailable
     """
-    print("  Computing price action features...")
+    if verbose:
+        print("  Computing price action features...")
 
     # Returns
     df = compute_return_features(df)
@@ -446,7 +448,8 @@ def compute_price_action_features(df: pd.DataFrame) -> pd.DataFrame:
     # Time features
     df = compute_time_features(df)
 
-    print(f"    ✓ Price action features complete")
+    if verbose:
+        print(f"    ✓ Price action features complete")
     return df
 
 

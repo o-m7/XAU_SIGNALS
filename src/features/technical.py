@@ -321,7 +321,7 @@ def compute_volume_price_momentum(df: pd.DataFrame) -> pd.DataFrame:
 # MASTER TECHNICAL INDICATOR BUILDER
 # =============================================================================
 
-def compute_technical_features(df: pd.DataFrame) -> pd.DataFrame:
+def compute_technical_features(df: pd.DataFrame, verbose: bool = False) -> pd.DataFrame:
     """
     Compute all technical indicator features.
 
@@ -335,6 +335,7 @@ def compute_technical_features(df: pd.DataFrame) -> pd.DataFrame:
 
     Args:
         df: DataFrame with OHLCV data
+        verbose: Print progress messages (default False)
 
     Returns:
         DataFrame with all technical indicator features added
@@ -343,7 +344,8 @@ def compute_technical_features(df: pd.DataFrame) -> pd.DataFrame:
         - All features use NO lookahead bias
         - Default periods: CMF=20, MACD=12/26/9, RSI=14, BB=20
     """
-    print("  Computing technical indicator features...")
+    if verbose:
+        print("  Computing technical indicator features...")
 
     # CMF features
     df = compute_cmf_features(df, period=20)
@@ -357,7 +359,8 @@ def compute_technical_features(df: pd.DataFrame) -> pd.DataFrame:
     # Volume & Price Momentum
     df = compute_volume_price_momentum(df)
 
-    print(f"    ✓ Technical indicator features complete")
+    if verbose:
+        print(f"    ✓ Technical indicator features complete")
     return df
 
 

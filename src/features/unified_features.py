@@ -105,7 +105,8 @@ def merge_quotes_to_bars(
 def build_features(
     bars: pd.DataFrame,
     quotes: Optional[pd.DataFrame] = None,
-    feature_set: str = "all"
+    feature_set: str = "all",
+    verbose: bool = False
 ) -> pd.DataFrame:
     """
     Build features for training or live inference.
@@ -123,6 +124,7 @@ def build_features(
             - "model_rf", "model_rf_rebuilt": Model RF features (37 microstructure)
             - "microstructure": Microstructure features only
             - "cmf_macd": Technical features only
+        verbose: Print progress messages (default False for live, True for training)
 
     Returns:
         DataFrame with requested features
@@ -143,10 +145,10 @@ def build_features(
           6. Filter to requested feature set
 
     Examples:
-        >>> # Training: Build all features
-        >>> df = build_features(bars, quotes, feature_set="all")
+        >>> # Training: Build all features (verbose)
+        >>> df = build_features(bars, quotes, feature_set="all", verbose=True)
         >>>
-        >>> # Live: Build features for specific model
+        >>> # Live: Build features silently
         >>> df = build_features(bars, quotes, feature_set="model1_rebuilt")
     """
     # Validate inputs
@@ -162,16 +164,17 @@ def build_features(
         else:
             raise ValueError("Bars must have DatetimeIndex or 'timestamp' column")
 
-    print("="*80)
-    print("UNIFIED FEATURE ENGINEERING")
-    print("="*80)
-    print(f"Input bars: {len(bars):,} rows")
-    if quotes is not None and not quotes.empty:
-        print(f"Input quotes: {len(quotes):,} rows")
-    else:
-        print("Input quotes: None (microstructure features will be NaN)")
-    print(f"Feature set: {feature_set}")
-    print()
+    if verbose:
+        print("="*80)
+        print("UNIFIED FEATURE ENGINEERING")
+        print("="*80)
+        print(f"Input bars: {len(bars):,} rows")
+        if quotes is not None and not quotes.empty:
+            print(f"Input quotes: {len(quotes):,} rows")
+        else:
+            print("Input quotes: None (microstructure features will be NaN)")
+        print(f"Feature set: {feature_set}")
+        print()
 
     # Copy to avoid modifying input
     df = bars.copy()
@@ -183,41 +186,52 @@ def build_features(
 
     # Step 1: Merge quotes if available
     if quotes is not None and not quotes.empty:
-        print("Step 1: Merging quotes into bars...")
+        if verbose:
+            print("Step 1: Merging quotes into bars...")
         df = merge_quotes_to_bars(df, quotes, tolerance="120s")
-        print(f"  ✓ Quotes merged: {len(df.columns)} columns")
+        if verbose:
+            print(f"  ✓ Quotes merged: {len(df.columns)} columns")
     else:
-        print("Step 1: Skipping quote merge (no quotes provided)")
+        if verbose:
+            print("Step 1: Skipping quote merge (no quotes provided)")
 
     # Step 2: Compute microstructure features (requires quotes)
-    print("Step 2: Computing microstructure features...")
+    if verbose:
+        print("Step 2: Computing microstructure features...")
     if quotes is not None and not quotes.empty:
-        micro_features = compute_microstructure_features(df, quotes)
+        micro_features = compute_microstructure_features(df, quotes, verbose=verbose)
         # Join microstructure features
         df = df.join(micro_features, how='left')
-        print(f"  ✓ Microstructure complete: {len(micro_features.columns)} features")
+        if verbose:
+            print(f"  ✓ Microstructure complete: {len(micro_features.columns)} features")
     else:
-        print("  ⚠️ Skipping microstructure (no quotes)")
+        if verbose:
+            print("  ⚠️ Skipping microstructure (no quotes)")
 
     # Step 3: Compute price action features
-    print("Step 3: Computing price action features...")
-    df = compute_price_action_features(df)
+    if verbose:
+        print("Step 3: Computing price action features...")
+    df = compute_price_action_features(df, verbose=verbose)
 
     # Step 4: Compute technical indicators
-    print("Step 4: Computing technical indicators...")
-    df = compute_technical_features(df)
+    if verbose:
+        print("Step 4: Computing technical indicators...")
+    df = compute_technical_features(df, verbose=verbose)
 
     # Step 5: Compute regime features
-    print("Step 5: Computing regime features...")
-    df = compute_regime_features(df)
+    if verbose:
+        print("Step 5: Computing regime features...")
+    df = compute_regime_features(df, verbose=verbose)
 
     # Step 6: Compute interaction features
-    print("Step 6: Computing interaction features...")
+    if verbose:
+        print("Step 6: Computing interaction features...")
     df = _compute_interaction_features(df)
 
     # Step 7: Filter to requested feature set
     if feature_set != "all":
-        print(f"Step 7: Filtering to {feature_set} features...")
+        if verbose:
+            print(f"Step 7: Filtering to {feature_set} features...")
         try:
             feature_cols = get_features_for_model(feature_set)
             # Keep only features that exist in df
@@ -232,17 +246,20 @@ def build_features(
 
             # Filter DataFrame
             df = df[available_features]
-            print(f"  ✓ Filtered to {len(available_features)} features")
+            if verbose:
+                print(f"  ✓ Filtered to {len(available_features)} features")
         except ValueError as e:
-            print(f"  ⚠️ Unknown feature set '{feature_set}', returning all features")
-            print(f"  Error: {e}")
+            if verbose:
+                print(f"  ⚠️ Unknown feature set '{feature_set}', returning all features")
+                print(f"  Error: {e}")
 
     # Final summary
-    print()
-    print("="*80)
-    print(f"FEATURE ENGINEERING COMPLETE: {len(df.columns)} features, {len(df)} rows")
-    print("="*80)
-    print()
+    if verbose:
+        print()
+        print("="*80)
+        print(f"FEATURE ENGINEERING COMPLETE: {len(df.columns)} features, {len(df)} rows")
+        print("="*80)
+        print()
 
     return df
 

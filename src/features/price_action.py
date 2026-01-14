@@ -135,18 +135,28 @@ def compute_quote_microstructure_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     df = df.copy()
 
-    # Check for required columns
-    if "bid_price" not in df.columns or "ask_price" not in df.columns:
+    # Check for required columns (handle _x suffix from pandas joins)
+    has_bid = "bid_price" in df.columns
+    has_ask = "ask_price" in df.columns
+    has_bid_x = "bid_price_x" in df.columns
+    has_ask_x = "ask_price_x" in df.columns
+
+    if not (has_bid or has_bid_x) or not (has_ask or has_ask_x):
         print("    ⚠️ bid_price/ask_price not found, skipping quote microstructure features")
         return df
 
-    # Mid price and spread
-    df["mid"] = (df["bid_price"] + df["ask_price"]) / 2
-    df["spread"] = df["ask_price"] - df["bid_price"]
+    # Use _x suffix columns if they exist (from pandas join with overlapping names)
+    if has_bid_x and has_ask_x:
+        df = df.rename(columns={"bid_price_x": "bid_price", "ask_price_x": "ask_price"})
+
+    # Mid price and spread - ensure numeric dtype
+    df["mid"] = pd.to_numeric((df["bid_price"] + df["ask_price"]) / 2, errors='coerce')
+    df["spread"] = pd.to_numeric(df["ask_price"] - df["bid_price"], errors='coerce')
     df["spread_pct"] = df["spread"] / df["mid"]
 
     # Mid returns and volatility
-    df["mid_ret_1"] = np.log(df["mid"] / df["mid"].shift(1))
+    mid_ratio = df["mid"] / df["mid"].shift(1)
+    df["mid_ret_1"] = np.log(mid_ratio.replace([np.inf, -np.inf], np.nan))
     df["mid_vol_20"] = df["mid_ret_1"].rolling(20, min_periods=10).std()
 
     # Rolling OLS slope of mid over last 10 bars

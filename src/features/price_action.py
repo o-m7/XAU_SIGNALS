@@ -5,11 +5,11 @@ Price Action Features
 Generates features related to price movement, volatility, volume, candlestick structure,
 and multi-timeframe context.
 
-Features generated (~35 features):
+Features generated (~37 features):
 - Returns (8): ret_1, ret_3, ret_5, ret_10, log_ret_1, ret_mean_5/20/60
 - Volatility (5): vol_10, vol_60, hl_range, norm_range, ATR_14
-- Microstructure (8): mid, spread, spread_pct, mid_ret_1, mid_vol_20, mid_slope_10,
-                      close_mid_diff, close_mid_spread_ratio
+- Microstructure (10): mid, spread, spread_pct, mid_ret_1, mid_vol_20, mid_slope_10,
+                       close_mid_diff, close_mid_spread_ratio, momentum_5, momentum_10
 - Volume (4): vol_change, vol_rel_20, vol_zscore_20, dollar_vol
 - Candlestick (8): body, range, upper_wick, lower_wick, body_pct, upper_wick_pct,
                    lower_wick_pct, is_bull
@@ -112,7 +112,7 @@ def compute_quote_microstructure_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     Compute quote microstructure features from bid/ask prices.
 
-    Features (8):
+    Features (10):
     - mid: Bid-ask midpoint
     - spread: Bid-ask spread
     - spread_pct: Spread as percentage of mid
@@ -121,6 +121,8 @@ def compute_quote_microstructure_features(df: pd.DataFrame) -> pd.DataFrame:
     - mid_slope_10: Rolling OLS slope of mid
     - close_mid_diff: Close - Mid (where close traded)
     - close_mid_spread_ratio: (Close - Mid) / Spread (normalized position)
+    - momentum_5: 5-bar mid price momentum
+    - momentum_10: 10-bar mid price momentum
 
     Args:
         df: DataFrame with 'bid_price', 'ask_price', 'close' columns
@@ -181,6 +183,11 @@ def compute_quote_microstructure_features(df: pd.DataFrame) -> pd.DataFrame:
         (df["close"] - df["mid"]) / df["spread"],
         0
     )
+
+    # Mid price momentum (required for Model 1)
+    # Uses mid price instead of close for better microstructure alignment
+    df["momentum_5"] = df["mid"].pct_change(5)
+    df["momentum_10"] = df["mid"].pct_change(10)
 
     return df
 
@@ -388,13 +395,13 @@ def compute_price_action_features(df: pd.DataFrame) -> pd.DataFrame:
     Combines:
     - Returns (8 features)
     - Volatility (5 features)
-    - Microstructure (8 features, if bid/ask available)
+    - Microstructure (10 features, if bid/ask available)
     - Volume (4 features, if volume available)
     - Candlestick (8 features)
     - Multi-Timeframe (4 features)
     - Time (6 features)
 
-    Total: ~35-43 features depending on data availability
+    Total: ~37-45 features depending on data availability
 
     Args:
         df: DataFrame with OHLCV data (and optionally bid_price, ask_price)

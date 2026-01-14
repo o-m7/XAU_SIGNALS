@@ -102,7 +102,7 @@ def add_return_features(df: pd.DataFrame) -> pd.DataFrame:
     
     # Simple returns at various lags
     for n in [1, 3, 5, 10]:
-        df[f"ret_{n}"] = df["close"].pct_change(n)
+        df[f"ret_{n}"] = df["close"].pct_change(n, fill_method=None)
     
     # Log return
     df["log_ret_1"] = np.log(df["close"] / df["close"].shift(1))

@@ -185,7 +185,7 @@ def compute_microstructure_features(
     # Low price + high flow = bullish divergence
 
     # Normalize 60-bar price return
-    ret_60 = combined['close'].pct_change(60)
+    ret_60 = combined['close'].pct_change(60, fill_method=None)
     ret_mean = ret_60.rolling(100, min_periods=20).mean()
     ret_std = ret_60.rolling(100, min_periods=20).std()
     ret_norm = (ret_60 - ret_mean) / (ret_std + 1e-4)

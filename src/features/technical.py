@@ -298,8 +298,8 @@ def compute_volume_price_momentum(df: pd.DataFrame) -> pd.DataFrame:
     df['volume_ratio'] = df['volume'] / (df['volume_sma'] + 1e-8)
 
     # Price momentum
-    df['price_momentum_5'] = df['close'].pct_change(5)
-    df['price_momentum_20'] = df['close'].pct_change(20)
+    df['price_momentum_5'] = df['close'].pct_change(5, fill_method=None)
+    df['price_momentum_20'] = df['close'].pct_change(20, fill_method=None)
 
     # Moving averages and price distance
     df['sma_20'] = df['close'].rolling(20, min_periods=1).mean()

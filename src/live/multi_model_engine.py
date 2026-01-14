@@ -167,12 +167,17 @@ class MultiModelSignalEngine:
     def _get_model_display_name(self, model_name: str) -> str:
         """Get display name for model."""
         display_names = {
+            # Phase 5 models (60-72% WR)
+            'model1_hgb': 'Model 1 HGB (72.8% WR)',
+            'model3_cmf_macd': 'Model 3 CMF/MACD (71.2% WR)',
+            'model_rf': 'Model RF (69.3% WR)',
+            'model_5min': 'Model 5min Scalp',
             # Legacy models
             'model1': 'Model #1 (Triple-Barrier)',
             'model3': 'Model #3 (CMF/MACD)',
             'y_tb_60': 'Model #1 (Triple-Barrier)',
             'cmf_macd': 'Model #3 (CMF/MACD)',
-            # Production models
+            # Other models
             'model3_cmf_macd_v4': 'Model #3 v4 (CMF/MACD)',
             'model1_high_conf': 'Model #1 HC (High Conf)',
             'model_rf_v4': 'Model RF v4 (Random Forest)',

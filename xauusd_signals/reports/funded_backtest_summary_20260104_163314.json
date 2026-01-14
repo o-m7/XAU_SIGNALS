@@ -1,0 +1,27 @@
+{
+  "timestamp": "2026-01-04T16:33:14.082356",
+  "test_period": "2024-01-01 to 2025-12-31",
+  "account_settings": {
+    "initial_balance": 50000.0,
+    "leverage": 10.0,
+    "fixed_position_size": 0.25,
+    "profit_target_pct": 0.1,
+    "max_drawdown_pct": 0.04
+  },
+  "market_costs": {
+    "spread_pips": 0.25,
+    "slippage_pips": 0.1,
+    "commission_per_side": 5.0
+  },
+  "success_criteria": {
+    "min_win_rate": 0.6,
+    "max_drawdown": 0.05
+  },
+  "models": {},
+  "summary": {
+    "total_models": 3,
+    "passed": 0,
+    "failed": 0,
+    "errors": 3
+  }
+}

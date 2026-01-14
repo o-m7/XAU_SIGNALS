@@ -1,0 +1,40 @@
+total_return: -0.06416618412683561
+total_return_pct: -6.416618412683562
+cagr: -0.9112775012309392
+cagr_pct: -91.12775012309392
+max_drawdown: 0.07240219155777472
+max_drawdown_pct: 7.240219155777472
+sharpe_ratio: -12.606788255902385
+sortino_ratio: -20.561165700750593
+start_date: 2020-01-25 07:25:00
+end_date: 2020-02-04 17:15:00
+days: 10
+years: 0.02737850787132101
+initial_capital: 100000.0
+final_equity: 93583.38158731644
+peak_equity: 100060.12343165517
+num_trades: 71
+win_rate: 0.2676056338028169
+win_rate_pct: 26.76056338028169
+num_winners: 19
+num_losers: 52
+num_breakeven: 0
+avg_win: 668.2354130662451
+avg_loss: -333.63579665235454
+profit_factor: 0.7318247677242055
+expectancy: -65.52941658681384
+avg_r: 2.0028888379820353
+total_pnl: -4652.588577663782
+total_gross_pnl: -737.859569562579
+total_costs: 3914.7290081012034
+avg_cost_per_trade: 55.13702828311554
+avg_bars_in_trade: 40.19718309859155
+avg_mae: 335.5196173467631
+avg_mfe: 427.95168207004525
+num_long_trades: 35
+num_short_trades: 36
+long_win_rate: 0.34285714285714286
+long_win_rate_pct: 34.285714285714285
+short_win_rate: 0.19444444444444445
+short_win_rate_pct: 19.444444444444446
+exit_reasons: {'SIGNAL': 65, 'TIME': 6}

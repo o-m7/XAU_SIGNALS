@@ -93,9 +93,17 @@ logger = logging.getLogger("LiveRunner")
 # =============================================================================
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
-DEFAULT_MODEL_PATH = PROJECT_ROOT / "models" / "y_tb_60_hgb_tuned.joblib"
-DEFAULT_MODEL3_PATH = PROJECT_ROOT / "models" / "model3_cmf_macd" / "model3_cmf_macd.joblib"
+# Phase 5 models (Jan 13, 2025) - 60-72% win rates
+MODEL1_HGB_PATH = PROJECT_ROOT / "models" / "rebuilt_from_scratch" / "model1_hgb.joblib"
+MODEL3_CMF_MACD_PATH = PROJECT_ROOT / "models" / "rebuilt_from_scratch" / "model3_cmf_macd.joblib"
+MODEL_RF_PATH = PROJECT_ROOT / "models" / "rebuilt_from_scratch" / "model_rf.joblib"
+MODEL_5MIN_SCALP_PATH = PROJECT_ROOT / "models" / "model_5min_scalp_v2.joblib"
+
+# Legacy paths (for backward compatibility)
+DEFAULT_MODEL_PATH = MODEL1_HGB_PATH
+DEFAULT_MODEL3_PATH = MODEL3_CMF_MACD_PATH
 DEFAULT_MODEL4_PATH = PROJECT_ROOT / "models" / "model4_lgbm.joblib"
+DEFAULT_MODEL_5MIN_PATH = MODEL_5MIN_SCALP_PATH
 LOCK_FILE = PROJECT_ROOT / ".live_runner.lock"
 PID_FILE = PROJECT_ROOT / ".live_runner.pid"
 
@@ -279,24 +287,39 @@ class LiveRunner:
                 logger.info(f"Loading {len(production_models)} production models")
                 models = production_models
             else:
-                # Legacy: Multi-model signal engine (Model #1 and Model #3)
-                model1_path = model_path  # Model #1
-                model3_path = PROJECT_ROOT / "models" / "model3_cmf_macd" / "model3_cmf_macd.joblib"
-
+                # Phase 5 models (Jan 13, 2025) - 60-72% win rates
                 models = [
+                    # Model 1: Microstructure HGB (72.8% WR)
                     ModelConfig(
-                        name="model1",
-                        model_path=str(model1_path),
-                        threshold_long=threshold_long,
-                        threshold_short=threshold_short,
-                        enabled=True
+                        name="model1_hgb",
+                        model_path=str(MODEL1_HGB_PATH),
+                        threshold_long=0.70,  # High confidence
+                        threshold_short=0.30,
+                        enabled=MODEL1_HGB_PATH.exists()
                     ),
+                    # Model 3: CMF/MACD HGB (71.2% WR)
                     ModelConfig(
-                        name="model3",
-                        model_path=str(model3_path),
-                        threshold_long=0.60,  # Optimal from backtest (45.9% L / 54.1% S)
-                        threshold_short=0.26,  # Optimal from backtest (Sharpe 2.76)
-                        enabled=model3_path.exists()  # Only enable if model exists
+                        name="model3_cmf_macd",
+                        model_path=str(MODEL3_CMF_MACD_PATH),
+                        threshold_long=0.70,  # High confidence
+                        threshold_short=0.30,
+                        enabled=MODEL3_CMF_MACD_PATH.exists()
+                    ),
+                    # Model RF: Random Forest (69.3% WR)
+                    ModelConfig(
+                        name="model_rf",
+                        model_path=str(MODEL_RF_PATH),
+                        threshold_long=0.70,  # High confidence
+                        threshold_short=0.30,
+                        enabled=MODEL_RF_PATH.exists()
+                    ),
+                    # Model 5min: Scalping (short-term, asymmetric TP/SL)
+                    ModelConfig(
+                        name="model_5min",
+                        model_path=str(MODEL_5MIN_SCALP_PATH),
+                        threshold_long=0.60,
+                        threshold_short=0.40,
+                        enabled=MODEL_5MIN_SCALP_PATH.exists()
                     ),
                 ]
 

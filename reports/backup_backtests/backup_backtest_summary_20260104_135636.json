@@ -1,0 +1,44 @@
+[
+  {
+    "model": "/Users/omar/Desktop/ML/xauusd_signals/models/backups/y_tb_60_hgb_tuned_20251230_173335.joblib",
+    "model_name": "y_tb_60_hgb_tuned_20251230_173335.joblib",
+    "status": "failed",
+    "return_code": 1,
+    "timestamp": "2026-01-04T13:56:31.813171"
+  },
+  {
+    "model": "/Users/omar/Desktop/ML/xauusd_signals/models/backups/y_tb_60_hgb_tuned_20251230_175110.joblib",
+    "model_name": "y_tb_60_hgb_tuned_20251230_175110.joblib",
+    "status": "failed",
+    "return_code": 1,
+    "timestamp": "2026-01-04T13:56:32.597974"
+  },
+  {
+    "model": "/Users/omar/Desktop/ML/xauusd_signals/models/y_tb_60_hgb_tuned_backup_20251226_123053.joblib",
+    "model_name": "y_tb_60_hgb_tuned_backup_20251226_123053.joblib",
+    "status": "failed",
+    "return_code": 1,
+    "timestamp": "2026-01-04T13:56:33.439241"
+  },
+  {
+    "model": "/Users/omar/Desktop/ML/xauusd_signals/models/y_tb_60_hgb_tuned_backup_20251226_123507.joblib",
+    "model_name": "y_tb_60_hgb_tuned_backup_20251226_123507.joblib",
+    "status": "failed",
+    "return_code": 1,
+    "timestamp": "2026-01-04T13:56:34.093897"
+  },
+  {
+    "model": "/Users/omar/Desktop/ML/xauusd_signals/models/y_tb_60_hgb_tuned.joblib",
+    "model_name": "y_tb_60_hgb_tuned.joblib",
+    "status": "failed",
+    "return_code": 1,
+    "timestamp": "2026-01-04T13:56:34.783238"
+  },
+  {
+    "model": "/Users/omar/Desktop/ML/xauusd_signals/models/y_tb_60_2014_2023.joblib",
+    "model_name": "y_tb_60_2014_2023.joblib",
+    "status": "failed",
+    "return_code": 1,
+    "timestamp": "2026-01-04T13:56:36.296134"
+  }
+]

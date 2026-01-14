@@ -1,0 +1,62 @@
+[
+  {
+    "model": "/Users/omar/Desktop/ML/xauusd_signals/models/backups/y_tb_60_hgb_tuned_20251230_173335.joblib",
+    "model_name": "y_tb_60_hgb_tuned_20251230_173335.joblib",
+    "status": "completed",
+    "return_code": 0,
+    "timestamp": "2026-01-04T13:56:58.515603",
+    "total_return_pct": -4.11,
+    "win_rate": 42.1,
+    "max_drawdown_pct": 6.74
+  },
+  {
+    "model": "/Users/omar/Desktop/ML/xauusd_signals/models/backups/y_tb_60_hgb_tuned_20251230_175110.joblib",
+    "model_name": "y_tb_60_hgb_tuned_20251230_175110.joblib",
+    "status": "completed",
+    "return_code": 0,
+    "timestamp": "2026-01-04T13:57:07.186474",
+    "total_return_pct": -4.83,
+    "win_rate": 33.3,
+    "max_drawdown_pct": 7.29
+  },
+  {
+    "model": "/Users/omar/Desktop/ML/xauusd_signals/models/y_tb_60_hgb_tuned_backup_20251226_123053.joblib",
+    "model_name": "y_tb_60_hgb_tuned_backup_20251226_123053.joblib",
+    "status": "completed",
+    "return_code": 0,
+    "timestamp": "2026-01-04T13:57:19.656506",
+    "total_return_pct": -4.11,
+    "win_rate": 42.1,
+    "max_drawdown_pct": 6.74
+  },
+  {
+    "model": "/Users/omar/Desktop/ML/xauusd_signals/models/y_tb_60_hgb_tuned_backup_20251226_123507.joblib",
+    "model_name": "y_tb_60_hgb_tuned_backup_20251226_123507.joblib",
+    "status": "completed",
+    "return_code": 0,
+    "timestamp": "2026-01-04T13:57:29.143364",
+    "total_return_pct": -4.82,
+    "win_rate": 41.2,
+    "max_drawdown_pct": 6.58
+  },
+  {
+    "model": "/Users/omar/Desktop/ML/xauusd_signals/models/y_tb_60_hgb_tuned.joblib",
+    "model_name": "y_tb_60_hgb_tuned.joblib",
+    "status": "completed",
+    "return_code": 0,
+    "timestamp": "2026-01-04T13:57:40.214806",
+    "total_return_pct": -4.11,
+    "win_rate": 42.1,
+    "max_drawdown_pct": 6.74
+  },
+  {
+    "model": "/Users/omar/Desktop/ML/xauusd_signals/models/y_tb_60_2014_2023.joblib",
+    "model_name": "y_tb_60_2014_2023.joblib",
+    "status": "completed",
+    "return_code": 0,
+    "timestamp": "2026-01-04T13:57:47.623016",
+    "total_return_pct": -4.96,
+    "win_rate": 22.2,
+    "max_drawdown_pct": 5.67
+  }
+]

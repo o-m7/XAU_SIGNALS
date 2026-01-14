@@ -61,14 +61,38 @@ class SignalEngine:
         """Load model and feature list from artifact."""
         if not self.model_path.exists():
             raise FileNotFoundError(f"Model not found: {self.model_path}")
-        
+
         artifact = joblib.load(self.model_path)
-        
+
         self.model = artifact["model"]
         self.features = artifact["features"]
         self.params = artifact.get("best_params", {})
-        
-        logger.info(f"Model loaded: {len(self.features)} features")
+
+        # Load TP/SL multipliers from artifact (defaults for backward compatibility)
+        # Check for asymmetric multipliers first
+        self.tp_mult_long = artifact.get("tp_mult_long", artifact.get("tp_mult", 1.5))
+        self.sl_mult_long = artifact.get("sl_mult_long", artifact.get("sl_mult", 1.0))
+        self.tp_mult_short = artifact.get("tp_mult_short", artifact.get("tp_mult", 1.5))
+        self.sl_mult_short = artifact.get("sl_mult_short", artifact.get("sl_mult", 1.0))
+
+        # Legacy single values (for backward compatibility)
+        self.tp_mult = self.tp_mult_long
+        self.sl_mult = self.sl_mult_long
+
+        self.horizon = artifact.get("horizon", 60)   # Default: 60-bar horizon
+
+        # Check if asymmetric
+        is_asymmetric = (self.tp_mult_long != self.tp_mult_short or
+                         self.sl_mult_long != self.sl_mult_short)
+
+        if is_asymmetric:
+            logger.info(
+                f"Model loaded: {len(self.features)} features, horizon={self.horizon}, "
+                f"LONG: TP={self.tp_mult_long}*ATR/SL={self.sl_mult_long}*ATR, "
+                f"SHORT: TP={self.tp_mult_short}*ATR/SL={self.sl_mult_short}*ATR"
+            )
+        else:
+            logger.info(f"Model loaded: {len(self.features)} features, horizon={self.horizon}, TP={self.tp_mult}*ATR, SL={self.sl_mult}*ATR")
         logger.debug(f"Features: {self.features[:5]}...")
     
     def generate_signal(
@@ -397,20 +421,23 @@ class SignalEngine:
             (tp_price, sl_price)
         """
         # =====================================================================
-        # DYNAMIC ATR-BASED TP/SL WITH 1:1.5 RISK:REWARD RATIO
+        # DYNAMIC ATR-BASED TP/SL (supports asymmetric multipliers)
         #
         # Uses ATR_14 to dynamically adjust to current market volatility.
         # More volatile = wider stops, less volatile = tighter stops.
         #
-        # Multipliers:
-        # - SL: 1.0 ATR (stop loss at 1 ATR from entry)
-        # - TP: 1.5 ATR (take profit at 1.5 ATR from entry)
-        # This gives a 1:1.5 risk:reward ratio.
+        # Multipliers loaded from model artifact:
+        # - LONG: tp_mult_long * ATR, sl_mult_long * ATR
+        # - SHORT: tp_mult_short * ATR, sl_mult_short * ATR
         # =====================================================================
 
-        # ATR multipliers for TP/SL
-        SL_MULT = 1.0  # Stop loss at 1.0 ATR
-        TP_MULT = 1.5  # Take profit at 1.5 ATR (1:1.5 R:R)
+        # ATR multipliers based on signal direction
+        if signal == Signal.LONG:
+            TP_MULT = self.tp_mult_long
+            SL_MULT = self.sl_mult_long
+        else:  # SHORT
+            TP_MULT = self.tp_mult_short
+            SL_MULT = self.sl_mult_short
 
         # Get ATR from features
         atr = feature_row.get('ATR_14', feature_row.get('atr_14', None))

@@ -169,7 +169,7 @@ def build_all_features(df: pd.DataFrame, quotes: Optional[pd.DataFrame] = None) 
         for col in nan_counts[nan_counts > 0].index[:10]:  # Show first 10
             print(f"    {col}: {nan_counts[col]:,} NaN")
         print(f"  Filling NaN with forward-fill then 0...")
-        df = df.fillna(method='ffill').fillna(0)
+        df = df.ffill().fillna(0)
 
     print(f"\n✓ Feature engineering complete (using unified module)")
     print(f"  Total features: {len(df.columns)}")
@@ -404,8 +404,9 @@ def walk_forward_train_test(
             signals = np.where(y_pred_proba >= thresh, 1,
                              np.where(y_pred_proba <= (1 - thresh), -1, 0))
 
-            # Calculate win rate (only on actual signals)
-            signal_mask = signals != 0
+            # Calculate win rate (only on actual signals with non-neutral labels)
+            # Filter: signal != 0 AND y_test != 0 (exclude neutrals from evaluation)
+            signal_mask = (signals != 0) & (y_test != 0)
             if signal_mask.sum() > 0:
                 correct = (signals[signal_mask] == np.sign(y_test[signal_mask])).sum()
                 wr = correct / signal_mask.sum()

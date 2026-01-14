@@ -327,15 +327,44 @@ class PolygonStream:
         logger.info(f"Stream started: {self.symbol}, channels={self._subscribed_channels}")
 
     def _run(self):
-        """Run the Massive client (blocking)."""
+        """Run the Massive client (blocking) with auto-reconnect on errors."""
+        while self._running:
+            try:
+                logger.info("Starting Massive WebSocket client.run()...")
+                self._client.run(handle_msg=self._handle_messages)
+                logger.info("Massive client.run() returned normally")
+                # If run() returns normally and we're still running, reconnect
+                if self._running:
+                    logger.warning("WebSocket closed unexpectedly, reconnecting in 2s...")
+                    time.sleep(2)
+                    self._reconnect_count += 1
+                    self._recreate_client()
+            except Exception as e:
+                if self._running:
+                    logger.error(f"Stream error: {e}")
+                    self._reconnect_count += 1
+                    # Auto-reconnect with exponential backoff (max 30s)
+                    backoff = min(30, 2 ** min(self._reconnect_count, 5))
+                    logger.info(f"Reconnecting in {backoff}s (attempt {self._reconnect_count})...")
+                    time.sleep(backoff)
+                    self._recreate_client()
+
+    def _recreate_client(self):
+        """Recreate the WebSocket client for reconnection."""
         try:
-            logger.info("Starting Massive WebSocket client.run()...")
-            self._client.run(handle_msg=self._handle_messages)
-            logger.info("Massive client.run() returned normally")
+            if self._client:
+                try:
+                    self._client.close()
+                except:
+                    pass
+            self._client = WebSocketClient(
+                api_key=self.api_key,
+                market=Market.Forex,
+                subscriptions=self._subscribed_channels,
+            )
+            logger.info(f"Client recreated, channels: {self._subscribed_channels}")
         except Exception as e:
-            if self._running:
-                logger.error(f"Stream error: {e}", exc_info=True)
-                self._reconnect_count += 1
+            logger.error(f"Failed to recreate client: {e}")
 
     def stop(self):
         """Stop the WebSocket stream."""

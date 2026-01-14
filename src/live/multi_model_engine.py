@@ -15,6 +15,7 @@ import pandas as pd
 import joblib
 
 from .signal_engine import SignalEngine, Signal
+from .trend_filter import TrendFilter, TrendDirection
 
 logger = logging.getLogger("MultiModelEngine")
 
@@ -39,15 +40,22 @@ class ModelConfig:
 class MultiModelSignalEngine:
     """
     Multi-model signal generation engine.
-    
+
     Runs multiple models simultaneously and generates signals
     from each model independently.
-    
+
     Args:
         models: List of ModelConfig objects
+        trend_filter_enabled: Whether to enable trend filtering (default: True)
+        trend_filter_method: Trend detection method ('sma', 'ema', 'returns', 'combined')
     """
-    
-    def __init__(self, models: List[ModelConfig]):
+
+    def __init__(
+        self,
+        models: List[ModelConfig],
+        trend_filter_enabled: bool = True,
+        trend_filter_method: str = 'sma'
+    ):
         self._models = [m for m in models if m.enabled]
         self.engines = {}
 
@@ -60,6 +68,20 @@ class MultiModelSignalEngine:
         # Safety thresholds
         self.MAX_SIGNALS_PER_HOUR = 50  # Alert if more than 50 signals/hour
         self.MIN_SIGNALS_PER_DAY = 1    # Alert if 0 signals in 24 hours
+
+        # Trend filter - prevents counter-trend signals
+        self.trend_filter = TrendFilter(
+            method=trend_filter_method,
+            lookback=50,
+            buffer_pct=0.001,  # 0.1% buffer
+            enabled=trend_filter_enabled
+        )
+        self.trend_filtered_count = defaultdict(int)  # Count of filtered signals per model
+
+        if trend_filter_enabled:
+            logger.info(f"📈 Trend filter ENABLED (method={trend_filter_method})")
+        else:
+            logger.info("📈 Trend filter DISABLED")
 
         for model_config in self._models:
             try:
@@ -123,14 +145,32 @@ class MultiModelSignalEngine:
                     timestamp=timestamp,
                     current_price=current_price
                 )
-                
+
+                # Apply trend filter to prevent counter-trend signals
+                original_signal = result['signal']
+                result['trend_filtered'] = False
+
+                if original_signal in ['LONG', 'SHORT']:
+                    if not self.trend_filter.should_allow_signal(original_signal, feature_row):
+                        # Block counter-trend signal
+                        result['signal'] = 'FLAT'
+                        result['trend_filtered'] = True
+                        result['original_signal'] = original_signal
+                        result['trend_direction'] = self.trend_filter.last_trend.value
+                        self.trend_filtered_count[model_name] += 1
+
+                        logger.debug(
+                            f"[{model_name}] {original_signal} blocked by trend filter "
+                            f"(trend={self.trend_filter.last_trend.value})"
+                        )
+
                 # Add model name to result
                 result['model_name'] = model_name
                 result['model_display'] = self._get_model_display_name(model_name)
-                
+
                 results[model_name] = result
 
-                # Track signal statistics
+                # Track signal statistics (after trend filter)
                 self.prediction_count[model_name] += 1
                 signal_type = result['signal']
                 self.signal_count[model_name][signal_type] += 1
@@ -167,10 +207,10 @@ class MultiModelSignalEngine:
     def _get_model_display_name(self, model_name: str) -> str:
         """Get display name for model."""
         display_names = {
-            # Phase 5 models (60-72% WR)
-            'model1_hgb': 'Model 1 HGB (72.8% WR)',
-            'model3_cmf_macd': 'Model 3 CMF/MACD (71.2% WR)',
-            'model_rf': 'Model RF (69.3% WR)',
+            # Balanced models (Jan 14, 2025) - fixed short bias
+            'model1_hgb': 'Model 1 HGB (Balanced)',
+            'model3_cmf_macd': 'Model 3 CMF/MACD (Balanced)',
+            'model_rf': 'Model RF (Balanced)',
             'model_5min': 'Model 5min Scalp',
             # Legacy models
             'model1': 'Model #1 (Triple-Barrier)',
@@ -253,11 +293,25 @@ class MultiModelSignalEngine:
             elif signals_per_hour == 0 and preds > 60:
                 status = "⚠️ DEAD"
 
+            # Get trend filter stats for this model
+            trend_blocked = self.trend_filtered_count[model_name]
+
             logger.info(
                 f"{status} {model_name}: "
                 f"LONG={counts['LONG']}, SHORT={counts['SHORT']}, FLAT={counts['FLAT']} "
                 f"({signals_per_hour} signals/hr) | "
                 f"Thresholds: ≥{config.threshold_long:.2f}/≤{config.threshold_short:.2f}"
+            )
+            if trend_blocked > 0:
+                logger.info(f"    📈 Trend filter blocked: {trend_blocked} counter-trend signals")
+
+        # Overall trend filter summary
+        filter_stats = self.trend_filter.get_stats()
+        if filter_stats['enabled']:
+            logger.info(
+                f"📈 Trend Filter: {filter_stats['signals_blocked']} blocked, "
+                f"{filter_stats['signals_allowed']} allowed, "
+                f"current trend: {filter_stats['last_trend']}"
             )
 
         logger.info("=" * 80)

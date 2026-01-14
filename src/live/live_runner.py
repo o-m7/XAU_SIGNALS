@@ -93,10 +93,10 @@ logger = logging.getLogger("LiveRunner")
 # =============================================================================
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
-# Phase 5 models (Jan 13, 2025) - 60-72% win rates
-MODEL1_HGB_PATH = PROJECT_ROOT / "models" / "rebuilt_from_scratch" / "model1_hgb.joblib"
-MODEL3_CMF_MACD_PATH = PROJECT_ROOT / "models" / "rebuilt_from_scratch" / "model3_cmf_macd.joblib"
-MODEL_RF_PATH = PROJECT_ROOT / "models" / "rebuilt_from_scratch" / "model_rf.joblib"
+# Balanced models (Jan 14, 2025) - fixed short bias with asymmetric TP/SL
+MODEL1_HGB_PATH = PROJECT_ROOT / "models" / "balanced" / "model1_hgb_balanced.joblib"
+MODEL3_CMF_MACD_PATH = PROJECT_ROOT / "models" / "balanced" / "model3_cmf_macd_balanced.joblib"
+MODEL_RF_PATH = PROJECT_ROOT / "models" / "balanced" / "model_rf_balanced.joblib"
 MODEL_5MIN_SCALP_PATH = PROJECT_ROOT / "models" / "model_5min_scalp_v2.joblib"
 
 # Legacy paths (for backward compatibility)
@@ -287,30 +287,31 @@ class LiveRunner:
                 logger.info(f"Loading {len(production_models)} production models")
                 models = production_models
             else:
-                # Phase 5 models (Jan 13, 2025) - 60-72% win rates
+                # Balanced models (Jan 14, 2025) - fixed short bias
+                # Using 0.60/0.40 thresholds since models are now properly balanced
                 models = [
-                    # Model 1: Microstructure HGB (72.8% WR)
+                    # Model 1: Microstructure HGB (balanced)
                     ModelConfig(
                         name="model1_hgb",
                         model_path=str(MODEL1_HGB_PATH),
-                        threshold_long=0.70,  # High confidence
-                        threshold_short=0.30,
+                        threshold_long=0.60,  # Balanced thresholds
+                        threshold_short=0.40,
                         enabled=MODEL1_HGB_PATH.exists()
                     ),
-                    # Model 3: CMF/MACD HGB (71.2% WR)
+                    # Model 3: CMF/MACD (balanced) - Note: Missing some features
                     ModelConfig(
                         name="model3_cmf_macd",
                         model_path=str(MODEL3_CMF_MACD_PATH),
-                        threshold_long=0.70,  # High confidence
-                        threshold_short=0.30,
+                        threshold_long=0.60,
+                        threshold_short=0.40,
                         enabled=MODEL3_CMF_MACD_PATH.exists()
                     ),
-                    # Model RF: Random Forest (69.3% WR)
+                    # Model RF: Random Forest (balanced)
                     ModelConfig(
                         name="model_rf",
                         model_path=str(MODEL_RF_PATH),
-                        threshold_long=0.70,  # High confidence
-                        threshold_short=0.30,
+                        threshold_long=0.60,
+                        threshold_short=0.40,
                         enabled=MODEL_RF_PATH.exists()
                     ),
                     # Model 5min: Scalping (short-term, asymmetric TP/SL)
@@ -323,7 +324,12 @@ class LiveRunner:
                     ),
                 ]
 
-            self.signal_engine = MultiModelSignalEngine(models)
+            # Initialize with trend filter enabled to prevent counter-trend signals
+            self.signal_engine = MultiModelSignalEngine(
+                models,
+                trend_filter_enabled=True,  # Block counter-trend signals
+                trend_filter_method='sma'   # Use SMA50 for trend detection
+            )
         
         # 3. Risk guard with confidence-based gating
         self.risk_guard = RiskGuard(

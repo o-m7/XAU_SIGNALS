@@ -150,16 +150,16 @@ class FeatureBuffer:
         # Round timestamp to minute for bar matching
         timestamp_minute = timestamp.replace(second=0, microsecond=0)
         
-        # Check if we have a recent quote with bid/ask for this minute
-        # Use the most recent bid/ask from quotes (within the same minute)
+        # Check if we have a recent quote with bid/ask (within 2 minutes tolerance)
+        # Use the most recent bid/ask from quotes
         bid_price = None
         ask_price = None
-        if (self._last_quote_bid is not None and 
-            self._last_quote_ask is not None and 
+        if (self._last_quote_bid is not None and
+            self._last_quote_ask is not None and
             self._last_quote_time is not None):
-            # Use last quote bid/ask if within same minute
-            quote_time_minute = self._last_quote_time.replace(second=0, microsecond=0)
-            if quote_time_minute == timestamp_minute:
+            # Use last quote bid/ask if within 2 minutes of bar timestamp
+            quote_age_seconds = (timestamp - self._last_quote_time).total_seconds()
+            if abs(quote_age_seconds) <= 120:  # 2 minute tolerance
                 bid_price = self._last_quote_bid
                 ask_price = self._last_quote_ask
         
@@ -342,8 +342,12 @@ class FeatureBuffer:
         df = df.set_index("timestamp").sort_index()
 
         # Build quotes DataFrame if bid/ask available
+        # Forward-fill any missing bid/ask values to handle gaps in quote stream
         quotes = None
         if "bid_price" in df.columns and "ask_price" in df.columns:
+            # Forward-fill to handle bars without matching quotes
+            df["bid_price"] = df["bid_price"].ffill()
+            df["ask_price"] = df["ask_price"].ffill()
             quotes = df[["bid_price", "ask_price"]].copy()
 
         # USE UNIFIED FEATURES (SAME AS TRAINING!)

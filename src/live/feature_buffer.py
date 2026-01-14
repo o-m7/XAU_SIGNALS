@@ -82,7 +82,12 @@ class FeatureBuffer:
         # Warmup tracking
         self._warmup_complete = False
         self._last_warmup_log: Optional[datetime] = None
-        
+
+        # Feature computation debounce (prevent redundant computations)
+        self._last_feature_time: Optional[datetime] = None
+        self._last_feature_row: Optional[pd.DataFrame] = None
+        self._feature_debounce_seconds = 5  # Min seconds between feature computations
+
         logger.info(
             f"FeatureBuffer initialized: max_window={max_window}, "
             f"min_bars_required={MIN_BARS_REQUIRED}"
@@ -336,6 +341,15 @@ class FeatureBuffer:
                 f"Not enough bars: {len(self._bars)} < {self.min_bars_required}"
             )
 
+        # Debounce: Return cached features if computed recently
+        # This prevents redundant computation when both quote and bar events trigger
+        now = datetime.now(timezone.utc)
+        if (self._last_feature_time is not None and
+            self._last_feature_row is not None and
+            (now - self._last_feature_time).total_seconds() < self._feature_debounce_seconds):
+            logger.debug(f"Returning cached features (debounce)")
+            return self._last_feature_row
+
         # Convert bars to DataFrame
         df = pd.DataFrame(list(self._bars))
         df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
@@ -387,7 +401,13 @@ class FeatureBuffer:
             logger.debug(f"Constant features (possible data issue): {constant_features[:5]}")
 
         # Select only required features in correct order
-        return latest[FEATURE_NAMES]
+        result = latest[FEATURE_NAMES]
+
+        # Cache the result for debouncing
+        self._last_feature_time = datetime.now(timezone.utc)
+        self._last_feature_row = result
+
+        return result
 
 
     def _rolling_slope(self, series: pd.Series, window: int) -> pd.Series:

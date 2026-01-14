@@ -138,6 +138,9 @@ def compute_microstructure_features(
     micro_df = pd.concat([feat_velocity, feat_spread, feat_entropy, feat_flow], axis=1)
 
     # 6. Join with bar data
+    # CRITICAL: Reindex micro_df to match bars index to prevent length mismatch
+    # The resample creates new timestamps that may not align with bars
+    micro_df = micro_df.reindex(bars.index)
     combined = bars[['high', 'low', 'close', 'volume']].join(micro_df, how='left')
 
     # 7. Compute derived features

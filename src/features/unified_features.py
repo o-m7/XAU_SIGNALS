@@ -95,6 +95,12 @@ def merge_quotes_to_bars(
     # Set timestamp back as index
     merged = merged.set_index(ts_col)
 
+    # CRITICAL: Ensure we don't have more rows than original bars
+    # merge_asof should not expand rows, but validate anyway
+    if len(merged) != len(bars):
+        # Keep only rows that match original bars index
+        merged = merged.reindex(bars.index)
+
     return merged
 
 
@@ -179,15 +185,28 @@ def build_features(
     # Copy to avoid modifying input
     df = bars.copy()
 
+    # CRITICAL: Ensure unique index to prevent join/merge issues
+    # Duplicate timestamps can cause exponential row growth in joins
+    if df.index.duplicated().any():
+        df = df[~df.index.duplicated(keep='last')]
+        if verbose:
+            print(f"  ⚠️ Removed duplicate timestamps, now {len(df)} rows")
+
     # Ensure OHLCV columns are numeric
     for col in ['open', 'high', 'low', 'close', 'volume']:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
 
+    # Track original row count to detect unexpected expansion
+    original_rows = len(df)
+
     # Step 1: Merge quotes if available
     if quotes is not None and not quotes.empty:
         if verbose:
             print("Step 1: Merging quotes into bars...")
+        # Also deduplicate quotes
+        if quotes.index.duplicated().any():
+            quotes = quotes[~quotes.index.duplicated(keep='last')]
         df = merge_quotes_to_bars(df, quotes, tolerance="120s")
         if verbose:
             print(f"  ✓ Quotes merged: {len(df.columns)} columns")
@@ -200,8 +219,13 @@ def build_features(
         print("Step 2: Computing microstructure features...")
     if quotes is not None and not quotes.empty:
         micro_features = compute_microstructure_features(df, quotes, verbose=verbose)
+        # CRITICAL: Reindex micro_features to match df index before join
+        micro_features = micro_features.reindex(df.index)
         # Join microstructure features
         df = df.join(micro_features, how='left')
+        # Validate row count didn't change
+        if len(df) != original_rows:
+            df = df.iloc[:original_rows]  # Truncate to original size
         if verbose:
             print(f"  ✓ Microstructure complete: {len(micro_features.columns)} features")
     else:

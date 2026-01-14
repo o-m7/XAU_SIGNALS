@@ -196,8 +196,8 @@ def compute_quote_microstructure_features(df: pd.DataFrame) -> pd.DataFrame:
 
     # Mid price momentum (required for Model 1)
     # Uses mid price instead of close for better microstructure alignment
-    df["momentum_5"] = df["mid"].pct_change(5)
-    df["momentum_10"] = df["mid"].pct_change(10)
+    df["momentum_5"] = df["mid"].pct_change(5, fill_method=None)
+    df["momentum_10"] = df["mid"].pct_change(10, fill_method=None)
 
     return df
 

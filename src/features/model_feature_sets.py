@@ -27,8 +27,9 @@ MODEL1_MICROSTRUCTURE_FEATURES = [
     'flow_cvd_60',             # Cumulative Volume Delta over 60 minutes
     'flow_divergence',         # Price vs flow divergence
 
-    # Returns (5)
+    # Returns (6)
     'ret_1',                   # 1-bar return
+    'ret_3',                   # 3-bar return (for 5min model)
     'ret_5',                   # 5-bar return
     'ret_10',                  # 10-bar return
     'log_ret_1',               # Log return

@@ -84,8 +84,9 @@ def classify_regime(df: pd.DataFrame) -> pd.DataFrame:
         df = calculate_atr(df, period=14)
 
     # ATR percentile (rolling 100-bar window)
+    # NOTE: When raw=False, x is already a Series, so no need to wrap in pd.Series()
     df['atr_percentile'] = df['atr_14'].rolling(100, min_periods=20).apply(
-        lambda x: pd.Series(x).rank(pct=True).iloc[-1] * 100,
+        lambda x: x.rank(pct=True).iloc[-1] * 100,
         raw=False
     )
 

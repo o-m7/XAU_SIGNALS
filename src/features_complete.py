@@ -440,8 +440,9 @@ def add_regime_features(df: pd.DataFrame) -> pd.DataFrame:
     # ATR Percentile (volatility regime)
     if 'ATR_14' in df.columns:
         atr_lookback = 100
+        # NOTE: When raw=False, x is already a Series, so no need to wrap in pd.Series()
         df['atr_percentile'] = df['ATR_14'].rolling(atr_lookback, min_periods=10).apply(
-            lambda x: pd.Series(x).rank(pct=True).iloc[-1] if len(x) > 0 else 0.5,
+            lambda x: x.rank(pct=True).iloc[-1] if len(x) > 0 else 0.5,
             raw=False
         ).fillna(0.5)
     else:

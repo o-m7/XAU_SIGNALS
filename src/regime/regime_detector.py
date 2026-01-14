@@ -110,8 +110,9 @@ class RegimeDetector:
             df['ATR_14'] = tr.rolling(self.atr_window).mean()
         
         # Calculate ATR percentile
+        # NOTE: When raw=False, x is already a Series, so no need to wrap in pd.Series()
         df['atr_pct'] = df['ATR_14'].rolling(self.atr_lookback, min_periods=10).apply(
-            lambda x: pd.Series(x).rank(pct=True).iloc[-1] if len(x) > 0 else 0.5,
+            lambda x: x.rank(pct=True).iloc[-1] if len(x) > 0 else 0.5,
             raw=False
         )
         df['atr_pct'] = df['atr_pct'].fillna(0.5)
